@@ -36,12 +36,16 @@ class SceneManager {
             stones: [],
             crops: [],
             seedPatches: [],
+            acorns: [], // Ground acorns that can be picked up or turn into saplings
+            ponds: [], // Fishing ponds that can have docks built on them
         };
         this.inventory = {
             wood: 0,
             stone: 0,
             leaves: 0,
             grain: 0,
+            acorns: 0,
+            fish: 0,
         };
         this.nextVillagerId = 1;
         this.namePools = {
@@ -70,6 +74,11 @@ class SceneManager {
                 name: 'Farmer',
                 description: 'Plants and harvests wheat crops to feed the village.',
             },
+            {
+                id: 'fisherman',
+                name: 'Fisherman',
+                description: 'Crafts fishing poles and catches fish from docks built on ponds.',
+            },
         ];
 
         this.professionActions = {
@@ -91,18 +100,26 @@ class SceneManager {
                 buttonClass: 'farmer',
                 menuTitle: 'Farming Actions',
             },
+            fisherman: {
+                icon: '🎣',
+                mode: 'craft',
+                buttonClass: 'fisherman',
+                menuTitle: 'Fisherman Crafting',
+            },
         };
 
         this.foresterPlantables = [
             {
                 id: 'oak-sapling',
                 name: 'Oak Sapling',
-                description: 'Replant a hearty oak that will mature into a dependable wood source.',
+                description: 'Plant an acorn that will grow into a sturdy oak tree.',
                 icon: '🌱',
                 scale: 0.9,
                 capacity: 64,
                 minSpacing: 4.2,
                 growthDays: { min: 1, max: 3 },
+                requiresAcorns: true,
+                acornCost: 1,
             },
         ];
 
@@ -115,9 +132,20 @@ class SceneManager {
                 scale: 0.5,
                 capacity: 16,
                 minSpacing: 1.8,
-                growthDays: { min: 0.75, max: 1.5 },
+                growthDays: { min: 3.0, max: 4.5 },
                 requiresSeeds: true,
                 seedCost: 1,
+            },
+        ];
+
+        this.fishermanCraftables = [
+            {
+                id: 'fishing-pole',
+                name: 'Fishing Pole',
+                description: 'Craft a basic fishing pole to catch fish from docks.',
+                icon: '🎣',
+                requires: { wood: 2, leaves: 3 },
+                craftDuration: 3,
             },
         ];
 
@@ -155,12 +183,21 @@ class SceneManager {
         this.homeCounter = 1;
         this.activeSocialInteractions = new Set();
 
+        // Dock system for fishing
+        this.docks = []; // Array of docks built on ponds
+        this.dockRequirements = { wood: 30, stone: 10 };
+        this.dockCounter = 1;
+        this.pendingDockPlacement = null; // For dock placement flow
+
         // Storehouse system
         this.storehouse = null;
         this.storehouseRequirements = { wood: 120, stone: 80, leaves: 40 };
         this.structureModalElement = null;
         this.structureModalVisible = false;
         this.activeStructureContext = null;
+        this.storehouseModalElement = null;
+        this.storehouseModalVisible = false;
+        this.storehouseModalFields = null;
         this.cropTooltipVisible = false;
         this.selectedCrop = null;
         this.actionHintElement = null;
@@ -179,6 +216,11 @@ class SceneManager {
         this.pointerHoverPoint = null;
         this.treeGrowthAccumulator = 0;
         this.activePlantingHint = null;
+
+        // Acorn system properties
+        this.acornSpawnAccumulator = 0;
+        this.acornSpawnCheckInterval = 2.5; // Check for acorn spawning every 2.5 seconds
+        this.lastDayForAcornConversion = -1; // Track which day we last processed overnight acorn->sapling conversion
         this.modalGenderIcon = null;
         this.modalEnergyMeterFill = null;
         this.modalEnergyLabel = null;
@@ -187,11 +229,16 @@ class SceneManager {
         this.modalVitalityContainer = null;
         this.modalIntelligenceLabel = null;
         this.modalStrengthLabel = null;
+        this.cropTooltipAnchor = null;
+        this.cropTooltipCard = null;
+        this._cropTooltipWorld = new THREE.Vector3();
+        this._cropTooltipProjected = new THREE.Vector3();
         this.simulationPaused = false;
         this.pausedBecausePlacement = false;
         this.modalRestoreVillagerId = null;
         this.modalRestoreAnchor = null;
         this.modalRestoreView = null;
+        this.activeModalView = 'main';
 
         this.initScene();
         this.setupUI();
@@ -230,7 +277,7 @@ class SceneManager {
         this.obstacles.push(...villageCenterObstacles);
 
         // Add basic environment elements
-        this.addTrees(10); // Procedural trees
+        this.addTrees(35); // Procedural trees - increased for sustainability with acorn system
         this.addBushes(15); // Procedural bushes
         this.addPonds(3); // Procedural ponds
         this.addStoneClusters(12); // Early resource nodes
@@ -251,6 +298,9 @@ class SceneManager {
                 wood: panel.querySelector('[data-resource="wood"] .value'),
                 stone: panel.querySelector('[data-resource="stone"] .value'),
                 leaves: panel.querySelector('[data-resource="leaves"] .value'),
+                grain: panel.querySelector('[data-resource="grain"] .value'),
+                acorns: panel.querySelector('[data-resource="acorns"] .value'),
+                fish: panel.querySelector('[data-resource="fish"] .value'),
             };
         } else {
             this.resourceLabels = {};
@@ -260,6 +310,8 @@ class SceneManager {
         this.modalElement = document.getElementById('villager-modal');
         this.structureModalElement = document.getElementById('structure-modal');
         this.cropTooltipElement = document.getElementById('crop-tooltip');
+        this.cropTooltipCard = this.cropTooltipElement?.querySelector('.card') || null;
+        this.storehouseModalElement = document.getElementById('storehouse-modal');
         this.cropTooltipTitle = this.cropTooltipElement?.querySelector('[data-field="crop-title"]');
         this.cropTooltipStatus = this.cropTooltipElement?.querySelector('[data-field="crop-status"]');
         this.cropTooltipGrowthPercent = this.cropTooltipElement?.querySelector('[data-field="crop-growth-percent"]');
@@ -376,6 +428,20 @@ class SceneManager {
             const closeButtons = this.cropTooltipElement.querySelectorAll('[data-action="close-crop-tooltip"]');
             closeButtons.forEach(button => button.addEventListener('click', () => this.hideCropTooltip()));
         }
+
+        if (this.storehouseModalElement) {
+            this.storehouseModalFields = {
+                woodValue: this.storehouseModalElement.querySelector('[data-storehouse="wood"] .value'),
+                stoneValue: this.storehouseModalElement.querySelector('[data-storehouse="stone"] .value'),
+                leavesValue: this.storehouseModalElement.querySelector('[data-storehouse="leaves"] .value'),
+                grainValue: this.storehouseModalElement.querySelector('[data-storehouse="grain"] .value'),
+                totalValue: this.storehouseModalElement.querySelector('[data-storehouse="total"]'),
+            };
+            const closeButtons = this.storehouseModalElement.querySelectorAll('[data-action="close-storehouse"]');
+            closeButtons.forEach(button => button.addEventListener('click', () => this.hideStorehouseModal()));
+        }
+
+        this.populateStorehouseModal();
     }
 
     setupInteraction() {
@@ -413,6 +479,25 @@ class SceneManager {
             return;
         }
 
+        if (this.pendingDockPlacement) {
+            // Check if clicking on a pond
+            const pondMeshes = this.resourceNodes.ponds
+                .filter(p => p?.object)
+                .map(p => p.object);
+            const pondIntersections = this.raycaster.intersectObjects(pondMeshes, false);
+            if (pondIntersections.length > 0) {
+                const pondMesh = pondIntersections[0].object;
+                const pondId = pondMesh.userData.pondNodeId;
+                const pondNode = this.resourceNodes.ponds.find(p => p.id === pondId);
+                if (pondNode) {
+                    this.handleDockPondSelection(pondNode);
+                }
+            } else {
+                this.showActionHint('Click on a pond to build the dock there.');
+            }
+            return;
+        }
+
         const villageMeshes = this.villagers.map(villager => villager.mesh);
         const structureMeshes = this.homes
             .filter(home => home?.structure)
@@ -421,14 +506,34 @@ class SceneManager {
             .filter(crop => crop?.object)
             .map(crop => crop.object);
 
-        const intersections = this.raycaster.intersectObjects([...villageMeshes, ...structureMeshes, ...cropMeshes], true);
-
-        if (intersections.length === 0) {
+        const openCropTooltip = (crop, pointerEvent) => {
+            if (!crop) return false;
+            this.showCropInfo(crop, pointerEvent);
             if (this.modalVisible) {
                 this.hideVillagerModal();
             }
             if (this.structureModalVisible) {
                 this.hideStructureModal();
+            }
+            return true;
+        };
+
+        const tryCropFallback = () => openCropTooltip(this.getCropAtPointer(), event);
+
+        const intersections = this.raycaster.intersectObjects([...villageMeshes, ...structureMeshes, ...cropMeshes], true);
+
+        if (intersections.length === 0) {
+            if (tryCropFallback()) {
+                return;
+            }
+            if (this.modalVisible) {
+                this.hideVillagerModal();
+            }
+            if (this.structureModalVisible) {
+                this.hideStructureModal();
+            }
+            if (this.storehouseModalVisible) {
+                this.hideStorehouseModal();
             }
             if (this.cropTooltipVisible) {
                 this.hideCropTooltip();
@@ -446,32 +551,66 @@ class SceneManager {
             if (this.structureModalVisible) {
                 this.hideStructureModal();
             }
+            if (this.storehouseModalVisible) {
+                this.hideStorehouseModal();
+            }
             if (this.cropTooltipVisible) {
                 this.hideCropTooltip();
             }
+            return;
         } else if (intersect?.userData?.structureId) {
-            const home = this.getHomeById(intersect.userData.structureId);
+            const structureId = intersect.userData.structureId;
+            if (structureId === 'storehouse') {
+                this.openStorehouseModal(event);
+                if (this.modalVisible) {
+                    this.hideVillagerModal();
+                }
+                if (this.structureModalVisible) {
+                    this.hideStructureModal();
+                }
+                if (this.cropTooltipVisible) {
+                    this.hideCropTooltip();
+                }
+                return;
+            }
+
+            const home = this.getHomeById(structureId);
             if (home) {
                 this.openStructureModal(home, event);
             }
             if (this.modalVisible) {
                 this.hideVillagerModal();
             }
+            if (this.storehouseModalVisible) {
+                this.hideStorehouseModal();
+            }
             if (this.cropTooltipVisible) {
                 this.hideCropTooltip();
             }
+            return;
         } else if (intersect?.userData?.cropNodeId) {
             const cropId = intersect.userData.cropNodeId;
             const crop = this.resourceNodes.crops.find(c => c.id === cropId);
-            if (crop) {
-                this.showCropInfo(crop);
+            if (openCropTooltip(crop, event)) {
+                return;
             }
-            if (this.modalVisible) {
-                this.hideVillagerModal();
-            }
-            if (this.structureModalVisible) {
-                this.hideStructureModal();
-            }
+        }
+
+        if (tryCropFallback()) {
+            return;
+        }
+
+        if (this.modalVisible) {
+            this.hideVillagerModal();
+        }
+        if (this.structureModalVisible) {
+            this.hideStructureModal();
+        }
+        if (this.storehouseModalVisible) {
+            this.hideStorehouseModal();
+        }
+        if (this.cropTooltipVisible) {
+            this.hideCropTooltip();
         }
     }
 
@@ -481,17 +620,38 @@ class SceneManager {
         }
         this.updatePointerFromEvent(event);
         this.raycaster.setFromCamera(this.pointer, this.camera);
-        if (!this.pendingPlanting) {
+
+        if (this.pendingPlanting) {
+            const groundPoint = this.getGroundIntersectionPoint();
+            if (!groundPoint) {
+                this.updatePlantingPreview(null);
+                this.pointerHoverPoint = null;
+                return;
+            }
+            this.pointerHoverPoint = groundPoint.clone();
+            this.updatePlantingPreview(groundPoint);
             return;
         }
-        const groundPoint = this.getGroundIntersectionPoint();
-        if (!groundPoint) {
-            this.updatePlantingPreview(null);
-            this.pointerHoverPoint = null;
+
+        if (this.pendingDockPlacement) {
+            // Check which pond is being hovered over
+            const pondMeshes = this.resourceNodes.ponds
+                .filter(p => p?.object)
+                .map(p => p.object);
+            const pondIntersections = this.raycaster.intersectObjects(pondMeshes, false);
+
+            if (pondIntersections.length > 0) {
+                const pondMesh = pondIntersections[0].object;
+                const pondId = pondMesh.userData.pondNodeId;
+                const pondNode = this.resourceNodes.ponds.find(p => p.id === pondId);
+                if (pondNode) {
+                    this.updateDockPlacementPreview(pondNode);
+                    return;
+                }
+            }
+            this.updateDockPlacementPreview(null);
             return;
         }
-        this.pointerHoverPoint = groundPoint.clone();
-        this.updatePlantingPreview(groundPoint);
     }
 
     updatePointerFromEvent(event) {
@@ -506,8 +666,21 @@ class SceneManager {
                 this.cancelPendingPlanting();
                 return;
             }
+            if (this.pendingDockPlacement) {
+                this.cancelDockPlacement();
+                return;
+            }
             if (this.modalVisible) {
                 this.hideVillagerModal();
+            }
+            if (this.structureModalVisible) {
+                this.hideStructureModal();
+            }
+            if (this.storehouseModalVisible) {
+                this.hideStorehouseModal();
+            }
+            if (this.cropTooltipVisible) {
+                this.hideCropTooltip();
             }
         }
     }
@@ -710,6 +883,7 @@ class SceneManager {
                 label.textContent = amount.toString();
             }
         });
+        this.updateStorehouseResourceDisplays();
     }
 
     setTimeMultiplier(multiplier, sourceButton) {
@@ -760,17 +934,64 @@ class SceneManager {
         if (!this.modalInventoryGrid || !villager) return;
         this.modalInventoryGrid.innerHTML = '';
 
-        const inventoryItems = [
-            {
+        const inventoryItems = [];
+
+        const seedCount = villager.inventory.wheatSeeds || 0;
+        if (seedCount > 0) {
+            inventoryItems.push({
                 id: 'wheatSeeds',
                 name: 'Wheat Seeds',
                 icon: '🌾',
                 description: 'Seeds for planting wheat crops',
-                count: villager.inventory.wheatSeeds || 0
-            }
-        ];
+                count: seedCount,
+            });
+        }
 
-        const hasItems = inventoryItems.some(item => item.count > 0);
+        if (villager.carrying && villager.carrying.amount > 0) {
+            const carrying = villager.carrying;
+            const metaMap = {
+                grain: {
+                    name: 'Harvested Grain',
+                    icon: '🌾',
+                    description: 'Freshly cut sheaves destined for town stores',
+                },
+                wood: {
+                    name: 'Wood Logs',
+                    icon: '🪵',
+                    description: 'Bundles of timber being hauled to storage',
+                },
+                stone: {
+                    name: 'Stone Blocks',
+                    icon: '🪨',
+                    description: 'Quarried stone being carried back to camp',
+                },
+                leaves: {
+                    name: 'Foraged Greens',
+                    icon: '🌿',
+                    description: 'Leafy bundles gathered for bedding and crafts',
+                },
+                wheatSeeds: {
+                    name: 'Wheat Seeds',
+                    icon: '🌾',
+                    description: 'Seeds collected from wild patches',
+                },
+            };
+            const meta = metaMap[carrying.type] ?? {
+                name: 'Supplies',
+                icon: '📦',
+                description: 'Resources currently in transit',
+            };
+
+            inventoryItems.push({
+                id: `carrying-${carrying.type}`,
+                name: `${meta.name} (In Transit)`,
+                icon: meta.icon,
+                description: meta.description,
+                count: carrying.amount,
+            });
+        }
+
+        const hasItems = inventoryItems.length > 0;
 
         if (!hasItems) {
             const empty = document.createElement('div');
@@ -818,6 +1039,13 @@ class SceneManager {
         });
     }
 
+    notifyVillagerInventoryChange(villager) {
+        if (!villager) return;
+        if (this.selectedVillager && this.selectedVillager.id === villager.id && this.activeModalView === 'inventory') {
+            this.populateInventoryView(villager);
+        }
+    }
+
     populateActionMenu(villager, mode) {
         if (mode === 'build') {
             this.populateBuildMenu(villager);
@@ -825,6 +1053,10 @@ class SceneManager {
         }
         if (mode === 'plant' || mode === 'farm') {
             this.populatePlantingMenu(villager);
+            return;
+        }
+        if (mode === 'craft') {
+            this.populateCraftMenu(villager);
             return;
         }
 
@@ -835,6 +1067,112 @@ class SceneManager {
         empty.style.cursor = 'default';
         empty.textContent = 'No actions available for this profession yet.';
         this.modalActionListContainer.appendChild(empty);
+    }
+
+    populateCraftMenu(villager) {
+        if (!this.modalActionListContainer) return;
+        this.modalActionListContainer.innerHTML = '';
+
+        const craftables = this.fishermanCraftables || [];
+        if (craftables.length === 0) {
+            const empty = document.createElement('li');
+            empty.className = 'relationship-item';
+            empty.style.cursor = 'default';
+            empty.textContent = 'No craftable items available.';
+            this.modalActionListContainer.appendChild(empty);
+            return;
+        }
+
+        craftables.forEach(craftable => {
+            const item = document.createElement('li');
+            item.className = 'relationship-item';
+
+            // Check if already crafted
+            const alreadyCrafted = craftable.id === 'fishing-pole' && villager.hasFishingPole;
+
+            // Check if can afford
+            const req = craftable.requires || {};
+            const canAfford = Object.keys(req).every(resource => {
+                return this.inventory[resource] >= req[resource];
+            });
+
+            const canCraft = !alreadyCrafted && canAfford;
+            item.style.cursor = canCraft ? 'pointer' : 'default';
+            item.style.opacity = canCraft ? '1' : '0.5';
+
+            const info = document.createElement('div');
+            info.className = 'info';
+
+            const name = document.createElement('div');
+            name.className = 'name';
+            name.textContent = `${craftable.icon} ${craftable.name}`;
+
+            const status = document.createElement('div');
+            status.className = 'status';
+            if (alreadyCrafted) {
+                status.textContent = 'Already crafted';
+            } else {
+                const reqParts = [];
+                Object.keys(req).forEach(resource => {
+                    const have = this.inventory[resource] || 0;
+                    const need = req[resource];
+                    reqParts.push(`${need} ${resource} (have ${have})`);
+                });
+                status.textContent = reqParts.join(', ');
+            }
+            status.style.fontSize = '0.85em';
+
+            info.appendChild(name);
+            info.appendChild(status);
+
+            const score = document.createElement('div');
+            score.className = 'score';
+            if (alreadyCrafted) {
+                score.textContent = '✓';
+                score.style.color = '#4ade80';
+            } else {
+                score.textContent = canCraft ? '🔨' : '✗';
+                score.style.color = canCraft ? '#4ade80' : '#f87171';
+            }
+
+            item.appendChild(info);
+            item.appendChild(score);
+
+            if (canCraft) {
+                item.addEventListener('click', () => {
+                    this.startCrafting(villager, craftable);
+                });
+            }
+
+            this.modalActionListContainer.appendChild(item);
+        });
+    }
+
+    startCrafting(villager, craftable) {
+        if (!villager || !craftable) return;
+
+        // Check resources from VILLAGE storage
+        const req = craftable.requires || {};
+        const canAfford = Object.keys(req).every(resource => {
+            return this.inventory[resource] >= req[resource];
+        });
+
+        if (!canAfford) {
+            this.showActionHint('Not enough village resources for crafting!');
+            return;
+        }
+
+        // Consume village resources
+        Object.keys(req).forEach(resource => {
+            this.inventory[resource] -= req[resource];
+        });
+        this.updateResourceDisplay();
+
+        // Assign crafting task
+        villager.assignCrafting(craftable);
+
+        this.hideVillagerModal();
+        this.showActionHint(`${villager.name} is crafting a ${craftable.name}!`);
     }
 
     populateBuildMenu(villager) {
@@ -853,6 +1191,19 @@ class SceneManager {
                 requirements: this.storehouseRequirements,
                 icon: '🏚️',
                 canBuild: this.canAffordStorehouse(),
+            });
+        }
+
+        // Dock (can build multiple)
+        const availablePonds = this.resourceNodes.ponds.filter(p => !p.hasDock);
+        if (availablePonds.length > 0) {
+            buildables.push({
+                id: 'dock',
+                name: 'Fishing Dock',
+                description: `Build a dock on a pond for fishermen (${availablePonds.length} ponds available)`,
+                requirements: this.dockRequirements,
+                icon: '🛟',
+                canBuild: this.canAffordDock(),
             });
         }
 
@@ -881,7 +1232,11 @@ class SceneManager {
             const status = document.createElement('div');
             status.className = 'status';
             const req = buildable.requirements;
-            status.textContent = `${req.wood} wood, ${req.stone} stone, ${req.leaves} leaves`;
+            const reqParts = [];
+            if (req.wood) reqParts.push(`${req.wood} wood`);
+            if (req.stone) reqParts.push(`${req.stone} stone`);
+            if (req.leaves) reqParts.push(`${req.leaves} leaves`);
+            status.textContent = reqParts.join(', ');
             status.style.fontSize = '0.85em';
 
             info.appendChild(name);
@@ -936,7 +1291,19 @@ class SceneManager {
                     : ` (Need ${seedCost} seed${seedCost > 1 ? 's' : ''}, have ${seedCount})`;
             }
 
-            const canAssign = hasCorrectProfession && hasRequiredSeeds;
+            // Check acorn requirements for tree planting
+            let hasRequiredAcorns = true;
+            let acornInfo = '';
+            if (plantable.requiresAcorns && villager) {
+                const acornCount = villager.inventory.acorns || 0;
+                const acornCost = plantable.acornCost || 1;
+                hasRequiredAcorns = acornCount >= acornCost;
+                acornInfo = hasRequiredAcorns
+                    ? ` (Acorns: ${acornCount})`
+                    : ` (Need ${acornCost} acorn${acornCost > 1 ? 's' : ''}, have ${acornCount})`;
+            }
+
+            const canAssign = hasCorrectProfession && hasRequiredSeeds && hasRequiredAcorns;
             item.style.cursor = canAssign ? 'pointer' : 'default';
             item.style.opacity = canAssign ? '1' : '0.58';
 
@@ -945,7 +1312,7 @@ class SceneManager {
 
             const name = document.createElement('div');
             name.className = 'name';
-            name.textContent = `${plantable.icon} ${plantable.name}${seedInfo}`;
+            name.textContent = `${plantable.icon} ${plantable.name}${seedInfo}${acornInfo}`;
 
             const status = document.createElement('div');
             status.className = 'status';
@@ -988,6 +1355,16 @@ class SceneManager {
             const seedCost = plantable.seedCost || 1;
             if (seedCount < seedCost) {
                 this.showActionHint(`Not enough seeds! Gather wheat seeds from wild patches first.`);
+                return;
+            }
+        }
+
+        // Check acorn requirements for tree planting
+        if (plantable.requiresAcorns) {
+            const acornCount = villager.inventory.acorns || 0;
+            const acornCost = plantable.acornCost || 1;
+            if (acornCount < acornCost) {
+                this.showActionHint(`Not enough acorns! Collect acorns from around mature trees first.`);
                 return;
             }
         }
@@ -1169,6 +1546,103 @@ class SceneManager {
         return point;
     }
 
+    getCropNearPoint(point, baseTolerance = 1.6) {
+        if (!point) return null;
+        let closest = null;
+        let closestDistance = Infinity;
+        for (const crop of this.resourceNodes.crops) {
+            if (!crop?.object) continue;
+            const position = crop.object.position;
+            const dist = Math.hypot(position.x - point.x, position.z - point.z);
+            const allowedRadius = baseTolerance * (crop.growth?.baseScale ?? 1);
+            if (dist <= allowedRadius && dist < closestDistance) {
+                closest = crop;
+                closestDistance = dist;
+            }
+        }
+        return closest;
+    }
+
+    getCropAtPointer(baseTolerance = 1.6) {
+        const groundPoint = this.getGroundIntersectionPoint();
+        if (!groundPoint) return null;
+        return this.getCropNearPoint(groundPoint, baseTolerance);
+    }
+
+    positionCropTooltip(crop, pointerEvent = null) {
+        if (!this.cropTooltipVisible || !this.cropTooltipCard) return;
+        if (!crop) return;
+
+        if (!this.cropTooltipAnchor) {
+            this.cropTooltipAnchor = { cropId: crop?.id ?? null, side: 'right' };
+        } else if (this.cropTooltipAnchor.cropId !== (crop?.id ?? null)) {
+            this.cropTooltipAnchor.cropId = crop?.id ?? null;
+        }
+
+        if (pointerEvent) {
+            this.cropTooltipAnchor.side = pointerEvent.clientX > window.innerWidth / 2 ? 'left' : 'right';
+        }
+
+        const card = this.cropTooltipCard;
+        const margin = 16;
+        let screenX = window.innerWidth / 2;
+        let screenY = window.innerHeight / 2;
+        let hasWorldPosition = false;
+
+        if (crop?.object?.position) {
+            const world = this._cropTooltipWorld;
+            world.copy(crop.object.position);
+            world.y += 0.45 * (crop.growth?.baseScale ?? 1);
+
+            const projected = this._cropTooltipProjected;
+            projected.copy(world).project(this.camera);
+
+            const px = (projected.x * 0.5 + 0.5) * window.innerWidth;
+            const py = (-projected.y * 0.5 + 0.5) * window.innerHeight;
+            if (Number.isFinite(px) && Number.isFinite(py)) {
+                screenX = px;
+                screenY = py;
+                hasWorldPosition = true;
+            }
+        }
+
+        if (!hasWorldPosition) {
+            if (pointerEvent) {
+                screenX = pointerEvent.clientX;
+                screenY = pointerEvent.clientY;
+            } else {
+                screenX = window.innerWidth / 2;
+                screenY = window.innerHeight / 2;
+            }
+        }
+
+        const cardRect = card.getBoundingClientRect();
+        const cardWidth = cardRect.width || card.offsetWidth || 320;
+        const cardHeight = cardRect.height || card.offsetHeight || 240;
+
+        const side = this.cropTooltipAnchor.side === 'left' ? 'left' : 'right';
+        const horizontalOffset = 28;
+
+        let left = side === 'left'
+            ? screenX - cardWidth - horizontalOffset
+            : screenX + horizontalOffset;
+
+        let top = screenY - cardHeight - 36;
+
+        if (top < margin) {
+            top = screenY + 32;
+        }
+
+        const maxLeft = window.innerWidth - cardWidth - margin;
+        const maxTop = window.innerHeight - cardHeight - margin;
+
+        left = Math.min(Math.max(margin, left), maxLeft);
+        top = Math.min(Math.max(margin, top), maxTop);
+
+        card.style.left = `${Math.round(left)}px`;
+        card.style.top = `${Math.round(top)}px`;
+    }
+
     validatePlantingLocation(position, plantable) {
         const minSpacing = plantable?.minSpacing ?? 4;
         const marginFromCenter = this.townCenterRadius + 1.8;
@@ -1348,6 +1822,14 @@ class SceneManager {
         if (plantable?.requiresSeeds && villager) {
             const seedCost = plantable.seedCost || 1;
             villager.inventory.wheatSeeds = Math.max(0, (villager.inventory.wheatSeeds || 0) - seedCost);
+            this.notifyVillagerInventoryChange(villager);
+        }
+
+        // Consume acorns if required
+        if (plantable?.requiresAcorns && villager) {
+            const acornCost = plantable.acornCost || 1;
+            villager.inventory.acorns = Math.max(0, (villager.inventory.acorns || 0) - acornCost);
+            this.notifyVillagerInventoryChange(villager);
         }
 
         const options = {
@@ -1408,6 +1890,12 @@ class SceneManager {
         return this.inventory.wood >= req.wood &&
                this.inventory.stone >= req.stone &&
                this.inventory.leaves >= req.leaves;
+    }
+
+    canAffordDock() {
+        const req = this.dockRequirements;
+        return this.inventory.wood >= req.wood &&
+               this.inventory.stone >= req.stone;
     }
 
     populateProfessionSelect() {
@@ -1915,9 +2403,373 @@ class SceneManager {
     startBuildingStructure(structureId, builder) {
         if (structureId === 'storehouse') {
             this.startStorehouseConstruction(builder);
+        } else if (structureId === 'dock') {
+            this.startDockPlacement(builder);
         }
         // Hide modal after starting construction
         this.hideVillagerModal();
+    }
+
+    startDockPlacement(builder) {
+        if (!builder) {
+            console.warn('Cannot assign dock construction without a villager.');
+            return;
+        }
+
+        // Check resources
+        const req = this.dockRequirements;
+        if (!this.canAffordDock()) {
+            alert(`Not enough resources! Need ${req.wood} wood, ${req.stone} stone.`);
+            return;
+        }
+
+        // Check available ponds
+        const availablePonds = this.resourceNodes.ponds.filter(p => !p.hasDock);
+        if (availablePonds.length === 0) {
+            alert('No ponds available for dock construction!');
+            return;
+        }
+
+        // Start pond selection flow
+        this.prepareVillagerForManualAction(builder);
+        this.createDockPlacementPreview();
+
+        this.pendingDockPlacement = {
+            builderId: builder.id,
+        };
+
+        const previousView = this.activeModalView || 'main';
+        this.pauseSimulationForPlacement(builder, previousView);
+        const instruction = 'Click on a pond to build a dock there.';
+        this.showActionHint(instruction);
+    }
+
+    createDockPlacementPreview() {
+        this.disposeDockPlacementPreview();
+
+        // Create a preview dock group (simplified version)
+        const group = new THREE.Group();
+
+        // We'll update this with actual dock preview when hovering over a pond
+        group.visible = false;
+        this.scene.add(group);
+
+        this.dockPlacementPreview = {
+            group,
+            dockMesh: null,
+            pondHighlight: null,
+            currentPondId: null,
+            valid: false,
+        };
+    }
+
+    updateDockPlacementPreview(pondNode) {
+        if (!this.dockPlacementPreview) return;
+        const preview = this.dockPlacementPreview;
+
+        // Clear previous highlighting
+        if (preview.pondHighlight && preview.currentPondId) {
+            const prevPond = this.resourceNodes.ponds.find(p => p.id === preview.currentPondId);
+            if (prevPond?.object?.material) {
+                prevPond.object.material.emissive.setHex(0x000000);
+                prevPond.object.material.emissiveIntensity = 0;
+            }
+        }
+
+        if (!pondNode) {
+            preview.group.visible = false;
+            preview.currentPondId = null;
+            preview.valid = false;
+            return;
+        }
+
+        // Check if this pond already has a dock
+        const isValid = !pondNode.hasDock;
+        preview.valid = isValid;
+        preview.currentPondId = pondNode.id;
+
+        // Highlight the pond
+        if (pondNode.object?.material) {
+            const highlightColor = isValid ? 0x4ade80 : 0xf97316;
+            pondNode.object.material.emissive.setHex(highlightColor);
+            pondNode.object.material.emissiveIntensity = isValid ? 0.3 : 0.4;
+        }
+
+        // Create or update dock preview (recreate if pond changed to get correct size)
+        if (!preview.dockMesh || preview.lastPondRadius !== pondNode.radius) {
+            if (preview.dockMesh) {
+                preview.group.remove(preview.dockMesh);
+                preview.dockMesh.traverse(child => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
+                });
+            }
+            preview.dockMesh = this.createDockPreviewMesh(pondNode.radius);
+            preview.group.add(preview.dockMesh);
+            preview.lastPondRadius = pondNode.radius;
+        }
+
+        // Position preview at pond
+        preview.group.position.copy(pondNode.position);
+        preview.group.position.y = 0;
+        preview.group.visible = true;
+
+        // Update preview opacity based on validity
+        const opacity = isValid ? 0.7 : 0.4;
+        const color = isValid ? 0x8b6f47 : 0xd1382f;
+        preview.dockMesh.traverse(child => {
+            if (child.isMesh && child.material) {
+                child.material.opacity = opacity;
+                child.material.color.setHex(color);
+                child.material.needsUpdate = true;
+            }
+        });
+
+        // Update hint
+        if (isValid) {
+            this.showActionHint('Click to build dock on this pond.');
+        } else {
+            this.showActionHint('This pond already has a dock!');
+        }
+    }
+
+    createDockPreviewMesh(pondRadius) {
+        const group = new THREE.Group();
+        const dockLength = pondRadius * 0.7;
+        const dockWidth = 1.2;
+        const platformSize = 1.8;
+
+        // Transparent preview material
+        const previewMaterial = new THREE.MeshStandardMaterial({
+            color: 0x8b6f47,
+            transparent: true,
+            opacity: 0.7,
+            roughness: 0.9,
+            metalness: 0.05,
+            depthWrite: false,
+        });
+
+        // Main walkway
+        const walkwayGeometry = new THREE.BoxGeometry(dockWidth, 0.15, dockLength);
+        const walkway = new THREE.Mesh(walkwayGeometry, previewMaterial.clone());
+        walkway.position.set(0, 0.1, -dockLength / 2);
+        group.add(walkway);
+
+        // Platform
+        const platformGeometry = new THREE.BoxGeometry(platformSize, 0.18, platformSize);
+        const platform = new THREE.Mesh(platformGeometry, previewMaterial.clone());
+        platform.position.set(0, 0.12, -dockLength);
+        group.add(platform);
+
+        // Outline/wireframe for better visibility
+        const edgesMaterial = new THREE.LineBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.6,
+        });
+
+        const walkwayEdges = new THREE.EdgesGeometry(walkwayGeometry);
+        const walkwayLine = new THREE.LineSegments(walkwayEdges, edgesMaterial.clone());
+        walkwayLine.position.copy(walkway.position);
+        group.add(walkwayLine);
+
+        const platformEdges = new THREE.EdgesGeometry(platformGeometry);
+        const platformLine = new THREE.LineSegments(platformEdges, edgesMaterial.clone());
+        platformLine.position.copy(platform.position);
+        group.add(platformLine);
+
+        return group;
+    }
+
+    disposeDockPlacementPreview() {
+        if (!this.dockPlacementPreview) return;
+
+        // Clear pond highlighting
+        if (this.dockPlacementPreview.currentPondId) {
+            const pond = this.resourceNodes.ponds.find(p => p.id === this.dockPlacementPreview.currentPondId);
+            if (pond?.object?.material) {
+                pond.object.material.emissive.setHex(0x000000);
+                pond.object.material.emissiveIntensity = 0;
+            }
+        }
+
+        const { group } = this.dockPlacementPreview;
+        if (group) {
+            this.scene.remove(group);
+            group.traverse(child => {
+                if (child.isMesh) {
+                    child.geometry?.dispose?.();
+                    child.material?.dispose?.();
+                }
+                if (child.isLineSegments) {
+                    child.geometry?.dispose?.();
+                    child.material?.dispose?.();
+                }
+            });
+        }
+        this.dockPlacementPreview = null;
+    }
+
+    handleDockPondSelection(pondNode) {
+        if (!this.pendingDockPlacement) return;
+        if (!pondNode || pondNode.hasDock) {
+            this.showActionHint('This pond already has a dock!');
+            return;
+        }
+
+        const builder = this.getVillagerById(this.pendingDockPlacement.builderId);
+        if (!builder) {
+            this.cancelDockPlacement();
+            return;
+        }
+
+        // Consume resources
+        const req = this.dockRequirements;
+        this.inventory.wood -= req.wood;
+        this.inventory.stone -= req.stone;
+        this.updateResourceDisplay();
+
+        // Create dock data
+        const dockId = `dock-${this.dockCounter++}`;
+        const dock = {
+            id: dockId,
+            pondId: pondNode.id,
+            location: pondNode.position.clone(),
+            pondRadius: pondNode.radius,
+            built: false,
+            building: true,
+            builderId: builder.id,
+            structure: null,
+            fishingSpot: null, // Will be set when dock is built
+        };
+
+        this.docks.push(dock);
+        pondNode.hasDock = true;
+        pondNode.dockId = dockId;
+
+        // Assign builder
+        builder.assignDockConstruction(dock);
+
+        // Clear placement mode and preview
+        this.disposeDockPlacementPreview();
+        this.pendingDockPlacement = null;
+        this.resumeSimulationFromPlacement({ reopenModal: false });
+        this.showActionHint(`${builder.name} is heading to build the fishing dock!`);
+    }
+
+    cancelDockPlacement() {
+        this.disposeDockPlacementPreview();
+        this.pendingDockPlacement = null;
+        this.resumeSimulationFromPlacement({ reopenModal: true });
+        this.hideActionHint();
+    }
+
+    finishDockConstruction(villager, dock) {
+        if (!dock || !dock.building || villager.id !== dock.builderId) {
+            return;
+        }
+
+        dock.building = false;
+        dock.builderId = null;
+        dock.built = true;
+
+        // Create the dock structure
+        this.createDockStructure(dock);
+
+        this.showActionHint(`${villager.name} has finished building the fishing dock!`);
+    }
+
+    createDockStructure(dock) {
+        if (dock.structure) {
+            this.scene.remove(dock.structure);
+        }
+
+        const group = new THREE.Group();
+        const pondRadius = dock.pondRadius;
+
+        // Dock extends from edge of pond toward center
+        const dockLength = pondRadius * 0.7;
+        const dockWidth = 1.2;
+        const platformSize = 1.8;
+
+        // Main dock walkway
+        const walkwayGeometry = new THREE.BoxGeometry(dockWidth, 0.15, dockLength);
+        const woodMaterial = new THREE.MeshStandardMaterial({
+            color: 0x8b6f47,
+            roughness: 0.9,
+            metalness: 0.05
+        });
+        const walkway = new THREE.Mesh(walkwayGeometry, woodMaterial);
+        walkway.position.set(0, 0.1, -dockLength / 2);
+        group.add(walkway);
+
+        // Platform at end
+        const platformGeometry = new THREE.BoxGeometry(platformSize, 0.18, platformSize);
+        const platform = new THREE.Mesh(platformGeometry, woodMaterial);
+        platform.position.set(0, 0.12, -dockLength);
+        group.add(platform);
+
+        // Wood planks detail on walkway
+        const plankMaterial = new THREE.MeshStandardMaterial({
+            color: 0x6b4e2a,
+            roughness: 0.85
+        });
+        for (let i = 0; i < 5; i++) {
+            const plankGeometry = new THREE.BoxGeometry(dockWidth + 0.1, 0.04, 0.12);
+            const plank = new THREE.Mesh(plankGeometry, plankMaterial);
+            plank.position.set(0, 0.19, -dockLength * 0.2 * i);
+            group.add(plank);
+        }
+
+        // Support posts
+        const postMaterial = new THREE.MeshStandardMaterial({
+            color: 0x5a3a1a,
+            roughness: 0.8
+        });
+        for (let i = 0; i <= 2; i++) {
+            for (let side = -1; side <= 1; side += 2) {
+                const postGeometry = new THREE.CylinderGeometry(0.08, 0.08, 0.8, 8);
+                const post = new THREE.Mesh(postGeometry, postMaterial);
+                post.position.set(dockWidth * 0.4 * side, -0.3, -dockLength * (i / 2));
+                group.add(post);
+            }
+        }
+
+        // Railings on platform
+        const railingMaterial = new THREE.MeshStandardMaterial({
+            color: 0x7a5530,
+            roughness: 0.75
+        });
+        for (let side = -1; side <= 1; side += 2) {
+            const railingGeometry = new THREE.BoxGeometry(0.06, 0.4, platformSize);
+            const railing = new THREE.Mesh(railingGeometry, railingMaterial);
+            railing.position.set(platformSize * 0.45 * side, 0.5, -dockLength);
+            group.add(railing);
+        }
+
+        // Decorative barrel
+        const barrelGeometry = new THREE.CylinderGeometry(0.15, 0.18, 0.3, 12);
+        const barrelMaterial = new THREE.MeshStandardMaterial({
+            color: 0x6d4e28,
+            roughness: 0.9
+        });
+        const barrel = new THREE.Mesh(barrelGeometry, barrelMaterial);
+        barrel.position.set(0.6, 0.36, -dockLength - 0.6);
+        group.add(barrel);
+
+        // Set fishing spot (where fishermen will stand)
+        dock.fishingSpot = new THREE.Vector3(0, 0, -dockLength);
+
+        // Position the dock at pond edge
+        group.position.copy(dock.location);
+        group.position.y = 0;
+        this.scene.add(group);
+
+        group.userData.structureId = dock.id;
+        dock.structure = group;
+
+        // Make it an obstacle
+        this.obstacles.push(group);
     }
 
     startStorehouseConstruction(builder) {
@@ -1961,6 +2813,9 @@ class SceneManager {
             building: true,
             builderId: builder.id,
             structure: null,
+            resourceDisplays: null,
+            dropPointLocal: null,
+            dropPoint: null,
         };
 
         // Assign builder
@@ -1985,6 +2840,23 @@ class SceneManager {
         this.storehouse.builderId = null;
         this.storehouse.built = true;
         this.createStorehouseStructure(this.storehouse);
+        this.updateStorehouseDropPoint();
+        this.updateStorehouseResourceDisplays();
+        this.showActionHint('Villagers begin relocating supplies to the new storehouse yard.');
+
+        const dropPoint = this.getStorehouseDropPoint();
+        if (dropPoint) {
+            this.villagers.forEach(villager => {
+                if (!villager) return;
+                if (villager.specialTask) return;
+                if (villager.state === 'returning' || villager.carrying) {
+                    villager.target = dropPoint.clone();
+                    if (villager.state !== 'returning') {
+                        villager.state = 'returning';
+                    }
+                }
+            });
+        }
     }
 
     finishBedConstruction(home, occupantId) {
@@ -2187,7 +3059,8 @@ class SceneManager {
         group.position.y = 0;
         group.lookAt(0, 0, 0);
         this.scene.add(group);
-        this.obstacles.push(group);
+        this.obstacles.push(walls);
+        this.obstacles.push(foundation);
 
         home.structure = group;
         if (!group.userData) {
@@ -2325,157 +3198,257 @@ class SceneManager {
     createStorehouseStructure(storehouse) {
         const group = new THREE.Group();
 
-        // Create foundation/yard area (larger flat surface)
-        const yardGeometry = new THREE.BoxGeometry(10, 0.3, 8);
-        const yardMaterial = new THREE.MeshStandardMaterial({ color: 0x786950, roughness: 0.85 });
+        // Base yard platform
+        const yardGeometry = new THREE.PlaneGeometry(14, 10);
+        const yardMaterial = new THREE.MeshStandardMaterial({
+            color: 0x6d5136,
+            roughness: 0.95,
+            side: THREE.DoubleSide,
+        });
         const yard = new THREE.Mesh(yardGeometry, yardMaterial);
-        yard.position.y = 0.15;
+        yard.rotation.x = -Math.PI / 2;
+        yard.position.set(0, 0.01, 0);
         group.add(yard);
 
-        // Main building foundation
-        const foundationGeometry = new THREE.BoxGeometry(7, 0.4, 5.5);
-        const foundationMaterial = new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 0.9 });
+        // Gravel edging
+        const yardBorderGeometry = new THREE.RingGeometry(6.8, 7.2, 32, 1, Math.PI * 0.15, Math.PI * 1.7);
+        const yardBorderMaterial = new THREE.MeshStandardMaterial({
+            color: 0x9a8b78,
+            side: THREE.DoubleSide,
+            roughness: 0.85,
+        });
+        const yardBorder = new THREE.Mesh(yardBorderGeometry, yardBorderMaterial);
+        yardBorder.rotation.x = -Math.PI / 2;
+        yardBorder.position.set(0, 0.012, 0);
+        group.add(yardBorder);
+
+        // Building foundation plinth
+        const foundationGeometry = new THREE.BoxGeometry(6.8, 0.4, 5.2);
+        const foundationMaterial = new THREE.MeshStandardMaterial({
+            color: 0x4b3a2a,
+            roughness: 0.9,
+        });
         const foundation = new THREE.Mesh(foundationGeometry, foundationMaterial);
-        foundation.position.y = 0.5;
+        foundation.position.y = 0.2;
+        foundation.position.x = -2.2;
         group.add(foundation);
 
-        // Main walls (barn-style)
-        const wallGeometry = new THREE.BoxGeometry(6.5, 3.5, 5);
-        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x8b4513, roughness: 0.8 });
+        // Building walls with subtle bevel
+        const wallGeometry = new THREE.BoxGeometry(6.2, 3.6, 4.6);
+        const wallMaterial = new THREE.MeshStandardMaterial({
+            color: 0x8d5330,
+            roughness: 0.75,
+        });
         const walls = new THREE.Mesh(wallGeometry, wallMaterial);
-        walls.position.y = 2.2;
+        walls.position.set(-2.2, 2.0, 0);
         group.add(walls);
 
-        // Wooden planks detailing (vertical supports)
-        const plankMaterial = new THREE.MeshStandardMaterial({ color: 0x6b3410, roughness: 0.85 });
+        // Support beams
+        const beamMaterial = new THREE.MeshStandardMaterial({ color: 0x5d3315, roughness: 0.7 });
         for (let i = -2; i <= 2; i++) {
-            const plank = new THREE.Mesh(
-                new THREE.BoxGeometry(0.15, 3.5, 0.15),
-                plankMaterial
-            );
-            plank.position.set(i * 1.5, 2.2, 2.55);
-            group.add(plank);
+            const beam = new THREE.Mesh(new THREE.BoxGeometry(0.18, 3.5, 0.2), beamMaterial);
+            beam.position.set(-2.2 + i * 1.45, 2.0, 2.45);
+            group.add(beam);
+            const rearBeam = beam.clone();
+            rearBeam.position.z = -2.45;
+            group.add(rearBeam);
         }
 
-        // Pitched roof (barn-style)
-        const roofMaterial = new THREE.MeshStandardMaterial({ color: 0x5a2d0c, roughness: 0.6 });
-        const roofLeft = new THREE.Mesh(
-            new THREE.BoxGeometry(7.2, 0.2, 3.5),
-            roofMaterial
-        );
-        roofLeft.position.set(0, 4.5, -0.8);
-        roofLeft.rotation.z = Math.PI * 0.25;
+        // Roof
+        const roofMaterial = new THREE.MeshStandardMaterial({
+            color: 0x4a2310,
+            roughness: 0.6,
+        });
+        const roofLeft = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 4.8), roofMaterial);
+        roofLeft.rotation.x = Math.PI / 2;
+        roofLeft.rotation.z = Math.PI * 0.28;
+        roofLeft.position.set(-2.2, 4.3, -0.2);
         group.add(roofLeft);
 
-        const roofRight = new THREE.Mesh(
-            new THREE.BoxGeometry(7.2, 0.2, 3.5),
-            roofMaterial
-        );
-        roofRight.position.set(0, 4.5, 0.8);
-        roofRight.rotation.z = -Math.PI * 0.25;
+        const roofRight = roofLeft.clone();
+        roofRight.rotation.z = -Math.PI * 0.28;
+        roofRight.position.set(-2.2, 4.3, 0.2);
         group.add(roofRight);
 
-        // Large barn doors
-        const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x3d2010, roughness: 0.7 });
-        const leftDoor = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.8, 0.12), doorMaterial);
-        leftDoor.position.set(-0.75, 1.9, 2.56);
-        group.add(leftDoor);
+        // Cupola vent on top
+        const cupola = new THREE.Mesh(
+            new THREE.BoxGeometry(1.2, 0.8, 1.2),
+            new THREE.MeshStandardMaterial({ color: 0x6e4022, roughness: 0.7 })
+        );
+        cupola.position.set(-2.2, 4.75, 0);
+        group.add(cupola);
+        const cupolaRoof = new THREE.Mesh(
+            new THREE.ConeGeometry(0.9, 0.6, 4),
+            new THREE.MeshStandardMaterial({ color: 0x361a0d, roughness: 0.5 })
+        );
+        cupolaRoof.position.copy(cupola.position);
+        cupolaRoof.position.y += 0.6;
+        cupolaRoof.rotation.y = Math.PI / 4;
+        group.add(cupolaRoof);
 
-        const rightDoor = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.8, 0.12), doorMaterial);
-        rightDoor.position.set(0.75, 1.9, 2.56);
+        // Sliding barn doors
+        const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x3b2314, roughness: 0.65 });
+        const leftDoor = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2.8, 0.12), doorMaterial);
+        leftDoor.position.set(-3.7, 1.7, 2.41);
+        group.add(leftDoor);
+        const rightDoor = leftDoor.clone();
+        rightDoor.position.z = -2.41;
         group.add(rightDoor);
 
-        // Door handles
-        const handleMaterial = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, metalness: 0.6, roughness: 0.4 });
-        const handleLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.3, 8), handleMaterial);
-        handleLeft.position.set(-0.3, 1.9, 2.62);
-        handleLeft.rotation.z = Math.PI / 2;
-        group.add(handleLeft);
+        // Awning over entry
+        const awning = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.3, 1.2), new THREE.MeshStandardMaterial({
+            color: 0x5c2f15,
+            roughness: 0.6,
+        }));
+        awning.position.set(-3.6, 3.2, 0);
+        awning.rotation.z = Math.PI * 0.18;
+        group.add(awning);
 
-        const handleRight = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.3, 8), handleMaterial);
-        handleRight.position.set(1.2, 1.9, 2.62);
-        handleRight.rotation.z = Math.PI / 2;
-        group.add(handleRight);
+        // Yard staging area
+        const yardGroup = new THREE.Group();
+        yardGroup.position.set(3.7, 0, 0);
+        group.add(yardGroup);
 
-        // Windows on sides
-        const windowMaterial = new THREE.MeshStandardMaterial({ color: 0xa0876e, transparent: true, opacity: 0.7, roughness: 0.3 });
-        const windowLeft1 = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.9), windowMaterial);
-        windowLeft1.position.set(-3.29, 2.5, 0.8);
-        group.add(windowLeft1);
+        const palletMaterial = new THREE.MeshStandardMaterial({ color: 0x6b5134, roughness: 0.85 });
+        const createPallet = (width, depth) => {
+            const pallet = new THREE.Mesh(new THREE.BoxGeometry(width, 0.18, depth), palletMaterial);
+            pallet.position.y = 0.09;
+            return pallet;
+        };
 
-        const windowLeft2 = windowLeft1.clone();
-        windowLeft2.position.z = -0.8;
-        group.add(windowLeft2);
+        const resourceDisplays = {};
 
-        const windowRight1 = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.9), windowMaterial);
-        windowRight1.position.set(3.29, 2.5, 0.8);
-        group.add(windowRight1);
+        const createResourceDisplay = (type, options) => {
+            const displayGroup = new THREE.Group();
+            displayGroup.position.copy(options.position);
+            yardGroup.add(displayGroup);
+            displayGroup.userData = displayGroup.userData || {};
+            displayGroup.userData.structureId = 'storehouse';
+            displayGroup.userData.structureType = 'storehouse';
 
-        const windowRight2 = windowRight1.clone();
-        windowRight2.position.z = -0.8;
-        group.add(windowRight2);
+            const pallet = createPallet(options.palletSize.x, options.palletSize.z);
+            displayGroup.add(pallet);
+            pallet.userData = pallet.userData || {};
+            pallet.userData.structureId = 'storehouse';
+            pallet.userData.structureType = 'storehouse';
 
-        // Storage crates in yard (decorative)
-        const crateMaterial = new THREE.MeshStandardMaterial({ color: 0x6b5d4f, roughness: 0.9 });
-        for (let i = 0; i < 3; i++) {
-            const crate = new THREE.Mesh(
-                new THREE.BoxGeometry(0.6, 0.6, 0.6),
-                crateMaterial
-            );
-            const angle = (i / 3) * Math.PI * 2;
-            crate.position.set(
-                3.5 + Math.cos(angle) * 0.8,
-                0.6,
-                -2 + Math.sin(angle) * 0.8
-            );
-            crate.rotation.y = Math.random() * Math.PI / 4;
-            group.add(crate);
-        }
+            let pile;
+            if (type === 'wood') {
+                pile = new THREE.Group();
+                for (let i = 0; i < 6; i++) {
+                    const log = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.18, 0.2, 1.4, 12),
+                        new THREE.MeshStandardMaterial({ color: 0x8a5b32, roughness: 0.7 })
+                    );
+                    log.rotation.z = Math.PI / 2;
+                    log.position.set(0, 0.22 + 0.18 * i, 0);
+                    log.rotation.y = (i % 2 === 0 ? 1 : -1) * 0.2;
+                    pile.add(log);
+                }
+            } else if (type === 'stone') {
+                pile = new THREE.Mesh(
+                    new THREE.DodecahedronGeometry(0.85, 1),
+                    new THREE.MeshStandardMaterial({ color: 0x707070, roughness: 0.85 })
+                );
+            } else if (type === 'leaves') {
+                pile = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.8, 16, 12),
+                    new THREE.MeshStandardMaterial({ color: 0x4e7034, roughness: 0.8 })
+                );
+            } else if (type === 'grain') {
+                pile = new THREE.Group();
+                const sackMaterial = new THREE.MeshStandardMaterial({ color: 0xc7a26b, roughness: 0.75 });
+                for (let i = 0; i < 4; i++) {
+                    const sack = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.8, 12), sackMaterial);
+                    sack.position.set((i % 2 === 0 ? -0.22 : 0.22), 0.4 + Math.floor(i / 2) * 0.45, (i % 2 === 0 ? -0.24 : 0.24));
+                    pile.add(sack);
+                }
+            } else {
+                pile = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.8, 0.8, 0.8),
+                    new THREE.MeshStandardMaterial({ color: 0x8c7a66, roughness: 0.8 })
+                );
+            }
 
-        // Fence posts around yard
-        const fencePostMaterial = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.85 });
-        const fencePositions = [
-            { x: -5, z: -4 }, { x: -2.5, z: -4 }, { x: 0, z: -4 }, { x: 2.5, z: -4 }, { x: 5, z: -4 },
-            { x: -5, z: 4 }, { x: -2.5, z: 4 }, { x: 0, z: 4 }, { x: 2.5, z: 4 }, { x: 5, z: 4 },
-            { x: -5, z: -2 }, { x: -5, z: 0 }, { x: -5, z: 2 },
-            { x: 5, z: -2 }, { x: 5, z: 0 }, { x: 5, z: 2 },
-        ];
+            pile.position.y = options.basePileY ?? 0.45;
+            displayGroup.add(pile);
+            pile.userData = pile.userData || {};
+            pile.userData.structureId = 'storehouse';
+            pile.userData.structureType = 'storehouse';
 
-        fencePositions.forEach(pos => {
-            const post = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.08, 0.08, 1.2, 8),
-                fencePostMaterial
-            );
-            post.position.set(pos.x, 0.9, pos.z);
-            group.add(post);
+            resourceDisplays[type] = {
+                group: displayGroup,
+                pile,
+            };
+
+            displayGroup.traverse(child => {
+                child.userData = child.userData || {};
+                child.userData.structureId = 'storehouse';
+                child.userData.structureType = 'storehouse';
+            });
+        };
+
+        createResourceDisplay('wood', {
+            position: new THREE.Vector3(0.2, 0, -2.6),
+            palletSize: new THREE.Vector3(2.4, 1.6),
+            basePileY: 0.45,
+        });
+        createResourceDisplay('stone', {
+            position: new THREE.Vector3(0.3, 0, 0),
+            palletSize: new THREE.Vector3(2.0, 2.0),
+            basePileY: 0.4,
+        });
+        createResourceDisplay('leaves', {
+            position: new THREE.Vector3(0.3, 0, 2.6),
+            palletSize: new THREE.Vector3(2.2, 1.8),
+            basePileY: 0.35,
+        });
+        createResourceDisplay('grain', {
+            position: new THREE.Vector3(-2.4, 0, 0),
+            palletSize: new THREE.Vector3(1.8, 1.6),
+            basePileY: 0.45,
         });
 
-        // Lantern lighting
-        const lanternMaterial = new THREE.MeshStandardMaterial({
-            color: 0xffd27a,
-            emissive: 0xffb347,
-            emissiveIntensity: 0.5
-        });
-        const lantern = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 12), lanternMaterial);
-        lantern.position.set(2.2, 2.8, 2.8);
+        // Yard lantern
+        const lanternMaterial = new THREE.MeshStandardMaterial({ color: 0xffd27a, emissive: 0xffb347, emissiveIntensity: 0.6 });
+        const lantern = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 12), lanternMaterial);
+        lantern.position.set(2.1, 2.6, 2.6);
         group.add(lantern);
-
-        const lanternLight = new THREE.PointLight(0xffb066, 1.5, 14);
+        const lanternLight = new THREE.PointLight(0xffb066, 1.4, 12);
         lanternLight.position.copy(lantern.position);
         group.add(lanternLight);
 
-        // Position and add to scene
+        // Fencing posts
+        const fenceMaterial = new THREE.MeshStandardMaterial({ color: 0x5a402c, roughness: 0.85 });
+        const fencePositions = [
+            [-5.8, -4.6], [-3.2, -4.7], [-0.6, -4.6], [2.0, -4.2], [4.3, -3.5], [5.6, -2.0],
+            [5.8, 1.8], [4.7, 3.8], [2.2, 4.6], [-0.6, 4.8], [-3.0, 4.6], [-5.7, 3.2],
+        ];
+        fencePositions.forEach(([x, z]) => {
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.1, 8), fenceMaterial);
+            post.position.set(x, 0.55, z);
+            group.add(post);
+        });
+
+        // Position and finalise
         group.position.copy(storehouse.location);
         group.position.y = 0;
-        group.lookAt(0, 0, 0); // Face town center
+        group.lookAt(0, 0, 0);
         this.scene.add(group);
-        this.obstacles.push(group);
+        this.obstacles.push(walls);
+        this.obstacles.push(foundation);
+
+        group.traverse(child => {
+            child.userData = child.userData || {};
+            child.userData.structureType = 'storehouse';
+            child.userData.structureId = 'storehouse';
+        });
 
         storehouse.structure = group;
-        if (!group.userData) {
-            group.userData = {};
-        }
-        group.userData.structureType = 'storehouse';
+        storehouse.resourceDisplays = resourceDisplays;
+        storehouse.dropPointLocal = new THREE.Vector3(4.2, 0, -1.2);
+        this.updateStorehouseDropPoint();
+        this.updateStorehouseResourceDisplays();
     }
 
     updateHomeVisuals(home) {
@@ -2574,14 +3547,35 @@ class SceneManager {
         this.activeStructureContext = null;
     }
 
-    showCropInfo(crop) {
+    openStorehouseModal(pointerEvent = null) {
+        if (!this.storehouseModalElement) return;
+        this.storehouseModalElement.classList.remove('hidden');
+        this.storehouseModalElement.classList.add('visible');
+        this.storehouseModalElement.setAttribute('aria-hidden', 'false');
+        this.storehouseModalVisible = true;
+        this.populateStorehouseModal();
+    }
+
+    hideStorehouseModal() {
+        if (!this.storehouseModalElement) return;
+        this.storehouseModalElement.classList.remove('visible');
+        this.storehouseModalElement.classList.add('hidden');
+        this.storehouseModalElement.setAttribute('aria-hidden', 'true');
+        this.storehouseModalVisible = false;
+    }
+
+    showCropInfo(crop, pointerEvent = null) {
         if (!this.cropTooltipElement) return;
         this.selectedCrop = crop;
+        if (!this.cropTooltipAnchor || this.cropTooltipAnchor.cropId !== (crop?.id ?? null)) {
+            this.cropTooltipAnchor = { cropId: crop?.id ?? null, side: 'right' };
+        }
         this.cropTooltipElement.classList.remove('hidden');
         this.cropTooltipElement.classList.add('visible');
         this.cropTooltipElement.setAttribute('aria-hidden', 'false');
         this.cropTooltipVisible = true;
         this.populateCropTooltip(crop);
+        this.positionCropTooltip(crop, pointerEvent);
     }
 
     hideCropTooltip() {
@@ -2591,6 +3585,7 @@ class SceneManager {
         this.cropTooltipElement.setAttribute('aria-hidden', 'true');
         this.cropTooltipVisible = false;
         this.selectedCrop = null;
+        this.cropTooltipAnchor = null;
     }
 
     populateCropTooltip(crop) {
@@ -2600,11 +3595,31 @@ class SceneManager {
         const isMature = growth.stage === 'mature';
 
         // Calculate growth percentage
-        let growthPercent = 100;
-        if (!isMature && growth.durationMinutes && growth.durationMinutes > 0) {
-            const elapsed = this.totalElapsedMinutes - (growth.createdAtMinutes || 0);
-            growthPercent = Math.min(100, Math.round((elapsed / growth.durationMinutes) * 100));
+        let growthPercentExact = isMature
+            ? 100
+            : (typeof growth.progressExact === 'number'
+                ? growth.progressExact
+                : (growth.progressPercent ?? 0));
+
+        if (!isMature && typeof growth.durationMinutes === 'number' && growth.durationMinutes > 0) {
+            const elapsed = typeof growth.elapsedMinutes === 'number'
+                ? growth.elapsedMinutes
+                : this.totalElapsedMinutes - (growth.createdAtMinutes || 0);
+            const fraction = THREE.MathUtils.clamp(
+                elapsed / Math.max(growth.durationMinutes, 0.0001),
+                0,
+                0.999
+            );
+            growthPercentExact = fraction * 100;
         }
+
+        if (isMature) {
+            growthPercentExact = 100;
+        }
+
+        const clampedPercent = THREE.MathUtils.clamp(growthPercentExact, 0, 100);
+        growth.progressExact = clampedPercent;
+        growth.progressPercent = Math.round(clampedPercent);
 
         // Update title
         if (this.cropTooltipTitle) {
@@ -2624,12 +3639,13 @@ class SceneManager {
 
         // Update growth percentage
         if (this.cropTooltipGrowthPercent) {
-            this.cropTooltipGrowthPercent.textContent = `${growthPercent}%`;
+            const displayPercent = isMature ? '100%' : `${clampedPercent.toFixed(1)}%`;
+            this.cropTooltipGrowthPercent.textContent = displayPercent;
             if (isMature) {
                 this.cropTooltipGrowthPercent.style.color = '#4ade80';
-            } else if (growthPercent > 66) {
+            } else if (clampedPercent > 66) {
                 this.cropTooltipGrowthPercent.style.color = '#a3e635';
-            } else if (growthPercent > 33) {
+            } else if (clampedPercent > 33) {
                 this.cropTooltipGrowthPercent.style.color = '#fbbf24';
             } else {
                 this.cropTooltipGrowthPercent.style.color = '#fb923c';
@@ -2638,7 +3654,7 @@ class SceneManager {
 
         // Update growth bar
         if (this.cropTooltipGrowthBar) {
-            this.cropTooltipGrowthBar.style.width = `${growthPercent}%`;
+            this.cropTooltipGrowthBar.style.width = `${clampedPercent}%`;
         }
 
         // Update planter
@@ -2656,10 +3672,10 @@ class SceneManager {
             if (isMature) {
                 this.cropTooltipTimeRemaining.textContent = 'Complete';
                 this.cropTooltipTimeRemaining.style.color = '#4ade80';
-            } else if (growth.matureAtMinutes) {
-                const remaining = growth.matureAtMinutes - this.totalElapsedMinutes;
-                const remainingDays = (remaining / this.dayLengthMinutes).toFixed(1);
-                this.cropTooltipTimeRemaining.textContent = `${remainingDays} days`;
+            } else if (typeof growth.matureAtMinutes === 'number') {
+                const remainingMinutes = Math.max(0, growth.matureAtMinutes - this.totalElapsedMinutes);
+                const remainingDays = remainingMinutes / this.dayLengthMinutes;
+                this.cropTooltipTimeRemaining.textContent = `${remainingDays.toFixed(1)} days`;
                 this.cropTooltipTimeRemaining.style.color = '#f0f7ff';
             } else {
                 this.cropTooltipTimeRemaining.textContent = 'Unknown';
@@ -2670,6 +3686,35 @@ class SceneManager {
         if (this.cropTooltipYield) {
             const yieldAmount = crop.capacity || 16;
             this.cropTooltipYield.textContent = `${yieldAmount} grain`;
+        }
+    }
+
+    populateStorehouseModal() {
+        if (!this.storehouseModalFields) return;
+        const fields = this.storehouseModalFields;
+        const totals = this.inventory || {};
+        const format = value => (value ?? 0).toLocaleString();
+
+        if (fields.woodValue) {
+            fields.woodValue.textContent = format(totals.wood);
+        }
+        if (fields.stoneValue) {
+            fields.stoneValue.textContent = format(totals.stone);
+        }
+        if (fields.leavesValue) {
+            fields.leavesValue.textContent = format(totals.leaves);
+        }
+        if (fields.grainValue) {
+            fields.grainValue.textContent = format(totals.grain);
+        }
+
+        if (fields.totalValue) {
+            const total =
+                (totals.wood ?? 0) +
+                (totals.stone ?? 0) +
+                (totals.leaves ?? 0) +
+                (totals.grain ?? 0);
+            fields.totalValue.textContent = total.toLocaleString();
         }
     }
 
@@ -2966,6 +4011,7 @@ class SceneManager {
             leaves: this.resourceNodes.bushes,
             grain: this.resourceNodes.crops,
             wheatSeeds: this.resourceNodes.seedPatches,
+            acorns: this.resourceNodes.acorns,
         };
 
         // If a specific type is requested, only search for that type
@@ -3237,6 +4283,96 @@ class SceneManager {
             0,
             Math.sin(angle) * radius
         );
+    }
+
+    getResourceDropPoint() {
+        const storehousePoint = this.getStorehouseDropPoint();
+        if (storehousePoint) {
+            return storehousePoint;
+        }
+        return this.getTownCenterDropPoint();
+    }
+
+    getStorehouseDropPoint() {
+        if (!this.storehouse || !this.storehouse.built || !this.storehouse.structure) {
+            return null;
+        }
+        const dropPoint = this.updateStorehouseDropPoint();
+        return dropPoint ? dropPoint.clone() : null;
+    }
+
+    updateStorehouseDropPoint() {
+        if (!this.storehouse || !this.storehouse.built || !this.storehouse.structure) {
+            return null;
+        }
+        const local = this.storehouse.dropPointLocal ?? new THREE.Vector3(4.2, 0, -1.2);
+        const world = local.clone();
+        this.storehouse.structure.localToWorld(world);
+        world.y = 0;
+        this.storehouse.dropPoint = world;
+        return world;
+    }
+
+    updateStorehouseResourceDisplays() {
+        if (!this.storehouse || !this.storehouse.built) {
+            return;
+        }
+        if (!this.storehouse.resourceDisplays) {
+            this.storehouse.resourceDisplays = {};
+        }
+
+        const totals = this.inventory || {};
+        const displays = this.storehouse.resourceDisplays;
+
+        const ensureGroupVisible = (display, visible) => {
+            if (display?.group) {
+                display.group.visible = visible;
+            }
+        };
+
+        const scalePile = (display, amount, config) => {
+            if (!display?.pile) return;
+            const maxAmount = config.maxAmount ?? 200;
+            const normalized = Math.min(1, amount / Math.max(1, maxAmount));
+
+            if (config.uniform) {
+                const baseUniform = config.baseUniform ?? 0.7;
+                const uniformRange = config.uniformRange ?? 0.6;
+                const scale = baseUniform + normalized * uniformRange;
+                display.pile.scale.set(scale, scale, scale);
+                if (config.adjustY && display.pile.position) {
+                    const baseY = config.baseY ?? 0.35;
+                    display.pile.position.y = baseY + (scale - baseUniform) * (config.offsetMultiplier ?? 0.35);
+                }
+                return;
+            }
+
+            const baseScaleY = config.baseScaleY ?? 0.3;
+            const scaleRange = config.scaleRange ?? 1.6;
+            const scaleY = baseScaleY + normalized * scaleRange;
+            display.pile.scale.y = scaleY;
+            if (config.adjustY && display.pile.position) {
+                display.pile.position.y = config.baseY ?? 0.4 + (scaleY - baseScaleY) * (config.offsetMultiplier ?? 0.4);
+            }
+        };
+
+        const configs = {
+            wood: { maxAmount: 240, baseScaleY: 0.4, scaleRange: 1.8, baseY: 0.45, offsetMultiplier: 0.45, adjustY: true },
+            stone: { maxAmount: 240, uniform: true, baseUniform: 0.7, uniformRange: 0.6, baseY: 0.38, offsetMultiplier: 0.4, adjustY: true },
+            leaves: { maxAmount: 160, uniform: true, baseUniform: 0.6, uniformRange: 0.55, baseY: 0.35, offsetMultiplier: 0.45, adjustY: true },
+            grain: { maxAmount: 120, uniform: true, baseUniform: 0.75, uniformRange: 0.5, baseY: 0.4, offsetMultiplier: 0.4, adjustY: true },
+        };
+
+        Object.entries(configs).forEach(([type, config]) => {
+            const amount = totals[type] ?? 0;
+            const display = displays[type];
+            ensureGroupVisible(display, amount > 0.01);
+            scalePile(display, amount, config);
+        });
+
+        if (this.storehouseModalVisible) {
+            this.populateStorehouseModal();
+        }
     }
 
     createVillageCenter() {
@@ -3547,6 +4683,10 @@ class SceneManager {
                 matureAtMinutes: isSeedling && durationMinutes ? this.totalElapsedMinutes + durationMinutes : null,
                 durationMinutes,
                 growDays: options.growDays ?? null,
+                progress: isSeedling ? 0 : 1,
+                progressPercent: isSeedling ? 0 : 100,
+                progressExact: isSeedling ? 0 : 100,
+                elapsedMinutes: isSeedling ? 0 : (durationMinutes ?? 0),
             },
         };
 
@@ -3942,9 +5082,14 @@ class SceneManager {
         node.claimedBy = null;
         node.depleted = false;
 
+        const totalDuration = growth.durationMinutes ?? growth.elapsedMinutes ?? 0;
         growth.stage = 'mature';
         growth.matureAtMinutes = null;
         growth.durationMinutes = null;
+        growth.progress = 1;
+        growth.progressPercent = 100;
+        growth.progressExact = 100;
+        growth.elapsedMinutes = totalDuration;
 
         node.object.userData = node.object.userData || {};
         node.object.userData.treeNodeId = node.id;
@@ -3976,6 +5121,11 @@ class SceneManager {
                 if (growth.durationMinutes) {
                     const elapsedMinutes = nowMinutes - (growth.createdAtMinutes ?? nowMinutes);
                     const progress = THREE.MathUtils.clamp(elapsedMinutes / Math.max(growth.durationMinutes, 0.0001), 0, 0.999);
+                    growth.elapsedMinutes = Math.max(0, elapsedMinutes);
+                    growth.progress = progress;
+                    const percentExact = progress * 100;
+                    growth.progressExact = Math.min(99.9, percentExact);
+                    growth.progressPercent = Math.min(99, Math.round(percentExact));
                     this.updateCropSeedlingVisual(node, progress);
                 }
             }
@@ -4014,9 +5164,14 @@ class SceneManager {
         node.claimedBy = null;
         node.depleted = false;
 
+        const totalDuration = growth.durationMinutes ?? growth.elapsedMinutes ?? 0;
         growth.stage = 'mature';
         growth.matureAtMinutes = null;
         growth.durationMinutes = null;
+        growth.progress = 1;
+        growth.progressPercent = 100;
+        growth.progressExact = 100;
+        growth.elapsedMinutes = totalDuration;
 
         node.object.userData = node.object.userData || {};
         node.object.userData.cropNodeId = node.id;
@@ -4033,6 +5188,198 @@ class SceneManager {
             const planterName = villager?.name || 'A farmer';
             this.showActionHint(`${planterName}'s wheat has ripened and is ready for harvest!`);
             growth.notifiedMature = true;
+        }
+    }
+
+    // Acorn System: Spawning, collection, and conversion
+    updateAcornSystem() {
+        // Only spawn acorns during daytime (6:00 - 19:00)
+        if (!this.isNight()) {
+            this.trySpawnAcorns();
+        }
+
+        // Process overnight acorn to sapling conversions at dawn
+        this.processOvernightAcornConversions();
+    }
+
+    trySpawnAcorns() {
+        // Each mature tree has a small chance to drop an acorn
+        const matureTrees = this.resourceNodes.trees.filter(tree =>
+            tree && !tree.depleted && tree.growth?.stage === 'mature'
+        );
+
+        matureTrees.forEach(tree => {
+            // Small random chance per check (about 0.5% per check, adjusted by interval)
+            const spawnChance = 0.005 * this.acornSpawnCheckInterval;
+            if (Math.random() < spawnChance) {
+                this.spawnAcornNearTree(tree);
+            }
+        });
+    }
+
+    spawnAcornNearTree(tree) {
+        if (!tree?.object) return;
+
+        // Random position near the tree (within 2-4 units)
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 2 + Math.random() * 2;
+        const position = new THREE.Vector3(
+            tree.object.position.x + Math.cos(angle) * distance,
+            0,
+            tree.object.position.z + Math.sin(angle) * distance
+        );
+
+        // Check if position is too close to town center
+        if (position.distanceTo(this.townCenterDropPoint) < this.townCenterRadius + 2) {
+            return;
+        }
+
+        // Create the acorn visual
+        const acornGroup = this.createAcornVisual(position);
+        this.scene.add(acornGroup);
+
+        // Add to resource nodes
+        const acornNode = {
+            id: `acorn-${this.resourceNodes.acorns.length + 1}`,
+            type: 'acorns',
+            object: acornGroup,
+            position: position.clone(),
+            remaining: 1,
+            capacity: 1,
+            claimedBy: null,
+            depleted: false,
+            spawnedOnDay: this.currentDay,
+            spawnedAtMinute: this.totalElapsedMinutes,
+            fromTree: tree.id,
+        };
+
+        this.resourceNodes.acorns.push(acornNode);
+    }
+
+    createAcornVisual(position) {
+        const group = new THREE.Group();
+
+        // Acorn cap (top, darker brown)
+        const capGeometry = new THREE.SphereGeometry(0.12, 8, 8, 0, Math.PI * 2, 0, Math.PI * 0.6);
+        const capMaterial = new THREE.MeshStandardMaterial({
+            color: 0x6b4423,
+            roughness: 0.8,
+            metalness: 0.1
+        });
+        const cap = new THREE.Mesh(capGeometry, capMaterial);
+        cap.position.y = 0.15;
+        group.add(cap);
+
+        // Acorn body (bottom, lighter brown)
+        const bodyGeometry = new THREE.SphereGeometry(0.13, 8, 8, 0, Math.PI * 2, Math.PI * 0.4, Math.PI * 0.6);
+        const bodyMaterial = new THREE.MeshStandardMaterial({
+            color: 0x8b6f47,
+            roughness: 0.7,
+            metalness: 0.05
+        });
+        const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+        body.position.y = 0.13;
+        group.add(body);
+
+        // Small highlight for detail
+        const highlightGeometry = new THREE.SphereGeometry(0.03, 6, 6);
+        const highlightMaterial = new THREE.MeshStandardMaterial({
+            color: 0xb8956a,
+            roughness: 0.5
+        });
+        const highlight = new THREE.Mesh(highlightGeometry, highlightMaterial);
+        highlight.position.set(0.08, 0.16, 0.05);
+        group.add(highlight);
+
+        group.position.copy(position);
+        group.userData.resourceType = 'acorns';
+
+        return group;
+    }
+
+    processOvernightAcornConversions() {
+        // Only process once per day, at dawn (6:00-7:00)
+        const currentHour = this.getCurrentHour();
+        if (currentHour !== 6) return;
+        if (this.lastDayForAcornConversion === this.currentDay) return;
+
+        this.lastDayForAcornConversion = this.currentDay;
+
+        // Find acorns that have been on the ground overnight
+        const acornsToConvert = this.resourceNodes.acorns.filter(acorn =>
+            acorn && !acorn.depleted && !acorn.claimedBy &&
+            acorn.spawnedOnDay < this.currentDay
+        );
+
+        acornsToConvert.forEach(acorn => {
+            // 30% chance for uncollected acorn to become a sapling
+            if (Math.random() < 0.3) {
+                this.convertAcornToSapling(acorn);
+            }
+        });
+    }
+
+    convertAcornToSapling(acornNode) {
+        if (!acornNode?.object) return;
+
+        const position = acornNode.position.clone();
+
+        // Remove the acorn visual
+        this.scene.remove(acornNode.object);
+        acornNode.object.traverse(child => {
+            if (child.isMesh) {
+                child.geometry?.dispose?.();
+                child.material?.dispose?.();
+            }
+        });
+
+        // Remove from acorns array
+        const index = this.resourceNodes.acorns.indexOf(acornNode);
+        if (index !== -1) {
+            this.resourceNodes.acorns.splice(index, 1);
+        }
+
+        // Create a new sapling at this location
+        const growthDays = { min: 1, max: 3 };
+        const randomDays = growthDays.min + Math.random() * (growthDays.max - growthDays.min);
+        const growthMinutes = randomDays * this.dayLengthMinutes;
+
+        const saplingNode = this.createTreeResource(position, {
+            capacity: 64,
+            scale: 0.9,
+            stage: 'sapling',
+            matureInMinutes: growthMinutes,
+            growDays: randomDays,
+        });
+
+        saplingNode.plantedOnDay = this.currentDay;
+        saplingNode.plantedAtMinute = this.totalElapsedMinutes;
+        saplingNode.plantedBy = 'nature'; // Track that this was a natural sapling
+
+        // Show a hint if player is watching
+        if (Math.random() < 0.15) { // Only show for some to avoid spam
+            this.showActionHint('An acorn has sprouted into a young sapling overnight!');
+        }
+    }
+
+    removeAcornNode(acornNode) {
+        if (!acornNode) return;
+
+        // Remove visual from scene
+        if (acornNode.object) {
+            this.scene.remove(acornNode.object);
+            acornNode.object.traverse(child => {
+                if (child.isMesh) {
+                    child.geometry?.dispose?.();
+                    child.material?.dispose?.();
+                }
+            });
+        }
+
+        // Remove from array
+        const index = this.resourceNodes.acorns.indexOf(acornNode);
+        if (index !== -1) {
+            this.resourceNodes.acorns.splice(index, 1);
         }
     }
 
@@ -4102,13 +5449,32 @@ class SceneManager {
     addPonds(count) {
         for (let i = 0; i < count; i++) {
             const position = this.getRandomPosition(35, 4);
-            const pondGeometry = new THREE.CircleGeometry(3 + Math.random() * 2, 32);
-            const pondMaterial = new THREE.MeshStandardMaterial({ color: 0x4169e1, side: THREE.DoubleSide });
+            const radius = 3 + Math.random() * 2;
+            const pondGeometry = new THREE.CircleGeometry(radius, 32);
+            const pondMaterial = new THREE.MeshStandardMaterial({
+                color: 0x4169e1,
+                side: THREE.DoubleSide,
+                roughness: 0.2,
+                metalness: 0.4
+            });
             const pond = new THREE.Mesh(pondGeometry, pondMaterial);
             pond.rotation.x = -Math.PI / 2;
             pond.position.set(position.x, 0.02, position.z); // Slightly above ground to avoid z-fighting
             this.scene.add(pond);
             this.obstacles.push(pond); // Treat as obstacle for villagers
+
+            // Track pond in resourceNodes for dock building
+            const pondNode = {
+                id: `pond-${this.resourceNodes.ponds.length + 1}`,
+                type: 'pond',
+                object: pond,
+                position: new THREE.Vector3(position.x, 0, position.z),
+                radius: radius,
+                hasDock: false,
+                dockId: null,
+            };
+            pond.userData.pondNodeId = pondNode.id;
+            this.resourceNodes.ponds.push(pondNode);
         }
     }
 
@@ -4290,10 +5656,21 @@ class SceneManager {
                 this.updateCropGrowth();
                 this.treeGrowthAccumulator -= growthTick;
             }
+
+            // Update acorn spawning and overnight conversions
+            this.acornSpawnAccumulator += worldDelta;
+            while (this.acornSpawnAccumulator >= this.acornSpawnCheckInterval) {
+                this.updateAcornSystem();
+                this.acornSpawnAccumulator -= this.acornSpawnCheckInterval;
+            }
         }
 
         if (this.structureModalVisible) {
             this.updateStructureModalPosition();
+        }
+
+        if (this.cropTooltipVisible && this.selectedCrop) {
+            this.positionCropTooltip(this.selectedCrop);
         }
 
         this.renderer.render(this.scene, this.camera);
@@ -4346,7 +5723,55 @@ class Villager {
         // Villager inventory system
         this.inventory = {
             wheatSeeds: 0,
+            acorns: 0,
         };
+
+        // Fisherman-specific
+        this.hasFishingPole = false;
+        this.fishingPoleVisual = null;
+    }
+
+    addFishingPoleVisual() {
+        if (this.fishingPoleVisual) return; // Already has visual
+
+        const poleGroup = new THREE.Group();
+
+        // Fishing rod/pole - long thin brown stick
+        const rodGeometry = new THREE.CylinderGeometry(0.02, 0.03, 1.2, 6);
+        const rodMaterial = new THREE.MeshStandardMaterial({
+            color: 0x6b4423,
+            roughness: 0.8
+        });
+        const rod = new THREE.Mesh(rodGeometry, rodMaterial);
+        rod.rotation.z = Math.PI / 6; // Angle it slightly
+        rod.position.set(0.15, 0.4, -0.1);
+        poleGroup.add(rod);
+
+        // Fishing line (thin string)
+        const lineGeometry = new THREE.CylinderGeometry(0.005, 0.005, 0.5, 4);
+        const lineMaterial = new THREE.MeshBasicMaterial({
+            color: 0xcccccc,
+            opacity: 0.7,
+            transparent: true
+        });
+        const line = new THREE.Mesh(lineGeometry, lineMaterial);
+        line.position.set(0.3, 0.15, -0.05);
+        line.rotation.z = Math.PI / 4;
+        poleGroup.add(line);
+
+        // Attach to villager mesh
+        this.mesh.add(poleGroup);
+        this.fishingPoleVisual = poleGroup;
+    }
+
+    removeFishingPoleVisual() {
+        if (!this.fishingPoleVisual) return;
+        this.mesh.remove(this.fishingPoleVisual);
+        this.fishingPoleVisual.traverse(child => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) child.material.dispose();
+        });
+        this.fishingPoleVisual = null;
     }
 
     setProfession(professionId) {
@@ -4471,6 +5896,15 @@ class Villager {
                     preferredType = 'wheatSeeds';
                 }
 
+                // Foresters prioritize acorns when available - they'll collect them during idle time
+                if (this.profession === 'forester' && this.manager.resourceNodes.acorns.length > 0) {
+                    const acornCount = this.inventory.acorns || 0;
+                    // Foresters will prioritize collecting acorns if they have less than 5
+                    if (acornCount < 5) {
+                        preferredType = 'acorns';
+                    }
+                }
+
                 const node = this.manager.findResourceNodeForVillager(this, preferredType);
                 if (node) {
                     this.currentResource = node;
@@ -4515,30 +5949,37 @@ class Villager {
                     const collected = Math.min(8, node.remaining);
                     node.remaining -= collected;
                     this.carrying = { type: node.type, amount: collected };
+                    this.manager.notifyVillagerInventoryChange(this);
                     if (node.remaining <= 0) {
                         this.manager.markResourceDepleted(node);
                     } else {
                         this.manager.releaseResourceClaim(node, this);
                     }
                     this.currentResource = null;
-                    this.target = this.manager.getTownCenterDropPoint();
+                    this.target = this.manager.getResourceDropPoint();
                     this.state = 'returning';
                 }
                 break;
             }
             case 'returning': {
                 if (!this.target) {
-                    this.target = this.manager.getTownCenterDropPoint();
+                    this.target = this.manager.getResourceDropPoint();
                 }
                 if (this.moveTowardsTarget(delta, 1.2)) {
                     if (this.carrying) {
-                        // Seeds go into villager inventory, other resources go to town storage
+                        // Seeds and acorns go into villager inventory, other resources go to town storage
                         if (this.carrying.type === 'wheatSeeds') {
                             this.inventory.wheatSeeds = (this.inventory.wheatSeeds || 0) + this.carrying.amount;
                             this.carrying = null;
+                            this.manager.notifyVillagerInventoryChange(this);
+                        } else if (this.carrying.type === 'acorns') {
+                            this.inventory.acorns = (this.inventory.acorns || 0) + this.carrying.amount;
+                            this.carrying = null;
+                            this.manager.notifyVillagerInventoryChange(this);
                         } else {
                             this.manager.depositResources(this.carrying);
                             this.carrying = null;
+                            this.manager.notifyVillagerInventoryChange(this);
                         }
                     }
                     this.state = 'seekingResource';
@@ -4714,6 +6155,21 @@ class Villager {
                 } else {
                     this.faceTowards(task.location);
                 }
+            }
+            return true;
+        }
+
+        if (task.type === 'crafting') {
+            // Villager stands still and crafts
+            task.timer += delta;
+            if (task.timer >= task.duration) {
+                // Crafting complete!
+                if (task.craftableId === 'fishing-pole') {
+                    this.hasFishingPole = true;
+                    this.addFishingPoleVisual();
+                    this.manager.showActionHint(`${this.name} has crafted a fishing pole!`);
+                }
+                this.finishSpecialTask();
             }
             return true;
         }
@@ -4919,6 +6375,47 @@ class Villager {
                     this.finishSpecialTask();
                 } else {
                     this.faceTowards(storehouse.location);
+                }
+            }
+            return true;
+        }
+
+        if (task.type === 'buildDock') {
+            const dock = this.manager.docks.find(d => d.id === task.dockId);
+            if (!dock || dock.builderId !== this.id) {
+                this.finishSpecialTask();
+                return false;
+            }
+
+            if (!task.target) {
+                task.target = dock.location.clone().add(new THREE.Vector3(Math.random() * 0.4 - 0.2, 0, Math.random() * 0.4 - 0.2));
+                this.target = task.target.clone();
+            }
+
+            if (task.state === 'travel') {
+                const distanceToDock = this.mesh.position.distanceTo(dock.location);
+                const reachedTarget = this.moveTowardsTarget(delta, 0.8);
+
+                if (!task.travelTimer) {
+                    task.travelTimer = 0;
+                }
+                task.travelTimer += delta;
+
+                if (reachedTarget || distanceToDock < 3.5 || task.travelTimer > 8) {
+                    task.state = 'building';
+                    task.buildTimer = 0;
+                    task.buildDuration = task.buildDuration ?? (5 + Math.random() * 2);
+                    this.target = null;
+                } else {
+                    this.avoidObstacles(obstacles, true);
+                }
+            } else if (task.state === 'building') {
+                task.buildTimer += delta;
+                if (task.buildTimer >= task.buildDuration) {
+                    this.manager.finishDockConstruction(this, dock);
+                    this.finishSpecialTask();
+                } else {
+                    this.faceTowards(dock.location);
                 }
             }
             return true;
@@ -5144,6 +6641,35 @@ class Villager {
         this.state = 'special';
     }
 
+    assignDockConstruction(dock) {
+        this.manager.releaseResourceClaim(this.currentResource, this);
+        this.currentResource = null;
+        this.carrying = null;
+        this.specialTask = {
+            type: 'buildDock',
+            dockId: dock.id,
+            state: 'travel',
+            target: dock.location.clone().add(new THREE.Vector3(Math.random() * 0.4 - 0.2, 0, Math.random() * 0.4 - 0.2)),
+        };
+        this.target = this.specialTask.target.clone();
+        this.state = 'special';
+    }
+
+    assignCrafting(craftable) {
+        this.manager.releaseResourceClaim(this.currentResource, this);
+        this.currentResource = null;
+        this.carrying = null;
+        this.specialTask = {
+            type: 'crafting',
+            craftableId: craftable.id,
+            craftableName: craftable.name,
+            duration: craftable.craftDuration || 3,
+            timer: 0,
+        };
+        this.target = null;
+        this.state = 'special';
+    }
+
     assignTreePlanting(location, plantable) {
         this.manager.releaseResourceClaim(this.currentResource, this);
         this.currentResource = null;
@@ -5171,6 +6697,7 @@ class Villager {
         if (this.carrying) {
             this.manager.depositResources(this.carrying);
             this.carrying = null;
+            this.manager.notifyVillagerInventoryChange(this);
         }
 
         if (this.currentResource) {
@@ -5231,6 +6758,7 @@ class Villager {
             if (this.carrying) {
                 this.manager.depositResources(this.carrying);
                 this.carrying = null;
+                this.manager.notifyVillagerInventoryChange(this);
             }
             this.state = 'seekingResource';
         }
@@ -5332,6 +6860,7 @@ class Villager {
             if (this.carrying) {
                 this.manager.depositResources(this.carrying);
                 this.carrying = null;
+                this.manager.notifyVillagerInventoryChange(this);
             }
         }
 
@@ -5707,6 +7236,9 @@ window.addEventListener('resize', () => {
     manager.camera.updateProjectionMatrix();
     manager.renderer.setSize(window.innerWidth, window.innerHeight);
     manager.applyTooltipPosition();
+    if (manager.cropTooltipVisible && manager.selectedCrop) {
+        manager.positionCropTooltip(manager.selectedCrop);
+    }
 });
 
 // Initialize
