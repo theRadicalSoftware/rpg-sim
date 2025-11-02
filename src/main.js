@@ -89,8 +89,13 @@ class SceneManager {
 
         this.homes = [];
         this.homeRequirements = { wood: 70, stone: 25 };
+        this.bedRequirements = { wood: 5, leaves: 10 }; // Per bed
         this.homeCounter = 1;
         this.activeSocialInteractions = new Set();
+
+        // Storehouse system
+        this.storehouse = null;
+        this.storehouseRequirements = { wood: 120, stone: 80, leaves: 40 };
         this.structureModalElement = null;
         this.structureModalVisible = false;
         this.activeStructureContext = null;
@@ -174,8 +179,13 @@ class SceneManager {
             this.modalRelationshipsContainer = this.modalElement.querySelector('[data-field="relationships"]');
             this.modalMainView = this.modalElement.querySelector('[data-view="main"]');
             this.modalRelationshipsView = this.modalElement.querySelector('[data-view="relationships"]');
+            this.modalBuildMenuView = this.modalElement.querySelector('[data-view="build-menu"]');
+            this.modalBuildListContainer = this.modalElement.querySelector('[data-field="build-list"]');
             this.modalOpenRelationshipsButton = this.modalElement.querySelector('[data-action="open-relationships"]');
             this.modalCloseRelationshipsButton = this.modalElement.querySelector('[data-action="close-relationships"]');
+            this.modalOpenBuildMenuButton = this.modalElement.querySelector('[data-action="open-build-menu"]');
+            this.modalCloseBuildMenuButton = this.modalElement.querySelector('[data-action="close-build-menu"]');
+            this.professionIconButton = document.getElementById('profession-icon-button');
 
             const closeElements = this.modalElement.querySelectorAll('[data-action="close-modal"]');
             closeElements.forEach(button => button.addEventListener('click', () => this.hideVillagerModal()));
@@ -195,6 +205,15 @@ class SceneManager {
             });
 
             this.modalCloseRelationshipsButton?.addEventListener('click', () => {
+                this.showVillagerModalView('main');
+            });
+
+            this.modalOpenBuildMenuButton?.addEventListener('click', () => {
+                this.showVillagerModalView('build-menu');
+                this.populateBuildMenu(this.selectedVillager);
+            });
+
+            this.modalCloseBuildMenuButton?.addEventListener('click', () => {
                 this.showVillagerModalView('main');
             });
         }
@@ -336,6 +355,17 @@ class SceneManager {
                 this.modalProfessionSelect.value = current;
             }
         }
+
+        // Show/hide build menu button for laborers
+        if (this.professionIconButton) {
+            const isLaborer = villager.profession === 'laborer';
+            if (isLaborer) {
+                this.professionIconButton.classList.remove('hidden');
+            } else {
+                this.professionIconButton.classList.add('hidden');
+            }
+        }
+
         if (this.modalProfessionDescription) {
             const def = this.getProfessionDefinition(villager.profession ?? 'gatherer');
             this.modalProfessionDescription.textContent = def?.description || 'Villagers without a chosen craft default to gathering nearby resources.';
@@ -421,10 +451,86 @@ class SceneManager {
     }
 
     showVillagerModalView(view = 'main') {
-        if (!this.modalMainView || !this.modalRelationshipsView) return;
+        if (!this.modalMainView || !this.modalRelationshipsView || !this.modalBuildMenuView) return;
         this.modalMainView.classList.toggle('active', view === 'main');
         this.modalRelationshipsView.classList.toggle('active', view === 'relationships');
+        this.modalBuildMenuView.classList.toggle('active', view === 'build-menu');
         this.activeModalView = view;
+    }
+
+    populateBuildMenu(villager) {
+        if (!this.modalBuildListContainer) return;
+        this.modalBuildListContainer.innerHTML = '';
+
+        // Define buildable structures
+        const buildables = [];
+
+        // Storehouse
+        if (!this.storehouse || !this.storehouse.built) {
+            buildables.push({
+                id: 'storehouse',
+                name: 'Storehouse & Yard',
+                description: 'A large storage facility for village resources',
+                requirements: this.storehouseRequirements,
+                icon: '🏚️',
+                canBuild: this.canAffordStorehouse(),
+            });
+        }
+
+        if (buildables.length === 0) {
+            const empty = document.createElement('li');
+            empty.className = 'relationship-item';
+            empty.style.cursor = 'default';
+            empty.textContent = 'All structures have been built.';
+            this.modalBuildListContainer.appendChild(empty);
+            return;
+        }
+
+        buildables.forEach(buildable => {
+            const item = document.createElement('li');
+            item.className = 'relationship-item';
+            item.style.cursor = buildable.canBuild ? 'pointer' : 'default';
+            item.style.opacity = buildable.canBuild ? '1' : '0.5';
+
+            const info = document.createElement('div');
+            info.className = 'info';
+
+            const name = document.createElement('div');
+            name.className = 'name';
+            name.textContent = `${buildable.icon} ${buildable.name}`;
+
+            const status = document.createElement('div');
+            status.className = 'status';
+            const req = buildable.requirements;
+            status.textContent = `${req.wood} wood, ${req.stone} stone, ${req.leaves} leaves`;
+            status.style.fontSize = '0.85em';
+
+            info.appendChild(name);
+            info.appendChild(status);
+
+            const score = document.createElement('div');
+            score.className = 'score';
+            score.textContent = buildable.canBuild ? '✓' : '✗';
+            score.style.color = buildable.canBuild ? '#4ade80' : '#f87171';
+
+            item.appendChild(info);
+            item.appendChild(score);
+
+            if (buildable.canBuild) {
+                item.addEventListener('click', () => {
+                    this.startBuildingStructure(buildable.id, villager);
+                });
+            }
+
+            this.modalBuildListContainer.appendChild(item);
+        });
+    }
+
+    canAffordStorehouse() {
+        const req = this.storehouseRequirements;
+        return this.inventory.wood >= req.wood &&
+               this.inventory.stone >= req.stone &&
+               this.inventory.leaves >= req.leaves;
     }
 
     populateProfessionSelect() {
@@ -466,6 +572,7 @@ class SceneManager {
         this.maybeTriggerBonfireBuild();
         this.updateBonfireNightCycle();
         this.maybeTriggerHomeBuild();
+        this.maybeTriggerBedBuild();
     }
 
     updateClockDisplay(force = false) {
@@ -775,6 +882,8 @@ class SceneManager {
             builderId: builder.id,
             structure: null,
             type: isCoupleHome ? 'family' : 'single',
+            beds: {}, // Track beds for each occupant: { [villagerId]: { built, builderId, building } }
+            occupantsInside: new Set(), // Track which villagers are currently inside (hidden from 3D world)
         };
         this.homes.push(home);
         occupant.homeId = home.id;
@@ -784,7 +893,44 @@ class SceneManager {
             partner.homeLocation = location.clone();
         }
 
+        // Initialize bed entries for each occupant
+        home.beds[occupant.id] = { built: false, builderId: null, building: false };
+        if (partner) {
+            home.beds[partner.id] = { built: false, builderId: null, building: false };
+        }
+
         builder.assignHomeConstruction(home);
+    }
+
+    maybeTriggerBedBuild() {
+        // Check if any homes need beds
+        const homesNeedingBeds = this.getHomesNeedingBeds();
+        if (homesNeedingBeds.length === 0) return;
+
+        // Check if we have resources for at least one bed
+        const req = this.bedRequirements;
+        if (this.inventory.wood < req.wood || this.inventory.leaves < req.leaves) {
+            return;
+        }
+
+        // Find an idle laborer to build the bed
+        const builder = this.villagers.find(villager =>
+            villager.canTakeConstruction() && !villager.isGatheringProfession()
+        );
+        if (!builder) return;
+
+        // Pick the first home needing a bed and find which occupant needs it
+        const home = homesNeedingBeds[0];
+        const occupantIds = [home.occupantId, home.partnerId].filter(Boolean);
+        const occupantId = occupantIds.find(id => {
+            const bedEntry = home.beds[id];
+            return bedEntry && !bedEntry.built && !bedEntry.building;
+        });
+
+        if (!occupantId) return;
+
+        // Start building the bed
+        this.startBedConstruction(home, occupantId, builder);
     }
 
     findHomeLocation() {
@@ -805,6 +951,75 @@ class SceneManager {
         return null;
     }
 
+    findStorehouseLocation() {
+        const maxAttempts = 50;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            // Place on the edge of the town center circle
+            const radius = this.townCenterRadius + 0.5 + Math.random() * 1.5; // Just outside the plaza
+            const angle = Math.random() * Math.PI * 2;
+            const position = new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+
+            // Check collision with homes (storehouse is larger, so need more space)
+            const collisionWithHomes = this.homes.some(home => home.location.distanceTo(position) < 8);
+            if (collisionWithHomes) continue;
+
+            // Check collision with bonfire
+            if (this.bonfire && this.bonfire.location && this.bonfire.location.distanceTo(position) < 8) {
+                continue;
+            }
+
+            return position;
+        }
+        return null;
+    }
+
+    startBuildingStructure(structureId, builder) {
+        if (structureId === 'storehouse') {
+            this.startStorehouseConstruction(builder);
+        }
+        // Hide modal after starting construction
+        this.hideVillagerModal();
+    }
+
+    startStorehouseConstruction(builder) {
+        if (this.storehouse && (this.storehouse.built || this.storehouse.building)) {
+            alert('Storehouse is already built or being built.');
+            return;
+        }
+
+        // Check resources
+        const req = this.storehouseRequirements;
+        if (!this.canAffordStorehouse()) {
+            alert(`Not enough resources! Need ${req.wood} wood, ${req.stone} stone, ${req.leaves} leaves.`);
+            return;
+        }
+
+        // Find location
+        const location = this.findStorehouseLocation();
+        if (!location) {
+            alert('Could not find a suitable location for the storehouse.');
+            return;
+        }
+
+        // Consume resources
+        this.inventory.wood -= req.wood;
+        this.inventory.stone -= req.stone;
+        this.inventory.leaves -= req.leaves;
+        this.updateResourceDisplay();
+
+        // Create storehouse data
+        this.storehouse = {
+            location,
+            built: false,
+            building: true,
+            builderId: builder.id,
+            structure: null,
+        };
+
+        // Assign builder
+        builder.assignStorehouseConstruction(this.storehouse);
+    }
+
     finishHomeConstruction(home, builder) {
         if (!home || home.built) return;
         home.building = false;
@@ -814,6 +1029,124 @@ class SceneManager {
         const occupant = this.getVillagerById(home.occupantId);
         if (occupant) {
             occupant.homeLocation = home.location.clone();
+        }
+    }
+
+    finishStorehouseConstruction() {
+        if (!this.storehouse || this.storehouse.built) return;
+        this.storehouse.building = false;
+        this.storehouse.builderId = null;
+        this.storehouse.built = true;
+        this.createStorehouseStructure(this.storehouse);
+    }
+
+    finishBedConstruction(home, occupantId) {
+        if (!home || !home.beds[occupantId]) return;
+        const bedEntry = home.beds[occupantId];
+        if (bedEntry.built) return;
+
+        bedEntry.built = true;
+        bedEntry.building = false;
+        bedEntry.builderId = null;
+
+        // Update visual indicator if home structure exists
+        if (home.structure) {
+            this.updateHomeVisuals(home);
+        }
+    }
+
+    // Method to check if home needs beds built
+    getHomesNeedingBeds() {
+        return this.homes.filter(home => {
+            if (!home.built) return false;
+            const occupantIds = [home.occupantId, home.partnerId].filter(Boolean);
+            return occupantIds.some(id => {
+                const bedEntry = home.beds[id];
+                return bedEntry && !bedEntry.built && !bedEntry.building;
+            });
+        });
+    }
+
+    // Method to start bed construction
+    startBedConstruction(home, occupantId, builder) {
+        const bedEntry = home.beds[occupantId];
+        if (!bedEntry || bedEntry.built || bedEntry.building) return false;
+
+        // Check resources
+        const req = this.bedRequirements;
+        if (this.inventory.wood < req.wood || this.inventory.leaves < req.leaves) {
+            return false;
+        }
+
+        // Consume resources
+        this.inventory.wood -= req.wood;
+        this.inventory.leaves -= req.leaves;
+        this.updateResourceDisplay();
+
+        // Mark as building
+        bedEntry.building = true;
+        bedEntry.builderId = builder.id;
+
+        // Assign task to builder
+        builder.assignBedConstruction(home, occupantId);
+        return true;
+    }
+
+    // Method to handle manual bed building requests from UI
+    requestManualBedBuild(home, occupantId) {
+        const bedEntry = home.beds[occupantId];
+        if (!bedEntry || bedEntry.built || bedEntry.building) {
+            console.log('Bed already exists or is being built');
+            return;
+        }
+
+        const occupant = this.getVillagerById(occupantId);
+        if (!occupant) {
+            console.log('Occupant not found');
+            return;
+        }
+
+        // Check resources
+        const req = this.bedRequirements;
+        const hasResources = this.inventory.wood >= req.wood && this.inventory.leaves >= req.leaves;
+
+        // Find available builder (prefer laborers)
+        let builder = this.villagers.find(villager =>
+            villager !== occupant && villager.canTakeConstruction() && !villager.isGatheringProfession()
+        );
+
+        if (!builder && occupant.canTakeConstruction()) {
+            builder = occupant;
+        } else if (!builder) {
+            builder = this.villagers.find(villager => villager !== occupant && villager.canTakeConstruction());
+        }
+
+        // If no builder available OR no resources, have the occupant gather and build themselves
+        if (!builder || !hasResources) {
+            if (!occupant.canTakeConstruction()) {
+                alert(`${occupant.name} is busy right now. Try again later.`);
+                return;
+            }
+
+            // Have the occupant gather resources and build the bed themselves
+            bedEntry.building = true;
+            bedEntry.builderId = occupant.id;
+            occupant.assignSelfBedConstruction(home, occupantId);
+
+            // Refresh the modal
+            if (this.structureModalVisible && this.activeStructureContext?.homeId === home.id) {
+                this.populateStructureModal(home);
+            }
+            return;
+        }
+
+        // Start construction with available resources and builder
+        const success = this.startBedConstruction(home, occupantId, builder);
+        if (success) {
+            // Refresh the modal to show updated state
+            if (this.structureModalVisible && this.activeStructureContext?.homeId === home.id) {
+                this.populateStructureModal(home);
+            }
         }
     }
 
@@ -870,6 +1203,39 @@ class SceneManager {
         lanternLight.position.copy(lantern.position);
         group.add(lanternLight);
 
+        // Add chimney
+        const chimneyMaterial = new THREE.MeshStandardMaterial({ color: 0x4a3426, roughness: 0.9 });
+        const chimneyHeight = isFamilyHome ? 1.4 : 1.2;
+        const chimneyRadius = isFamilyHome ? 0.22 : 0.18;
+        const chimney = new THREE.Mesh(
+            new THREE.CylinderGeometry(chimneyRadius, chimneyRadius * 1.1, chimneyHeight, 8),
+            chimneyMaterial
+        );
+        chimney.position.set(isFamilyHome ? -1.5 : -1.0, isFamilyHome ? 4.5 : 3.7, isFamilyHome ? 0.8 : 0.6);
+        group.add(chimney);
+
+        // Add chimney cap
+        const capMaterial = new THREE.MeshStandardMaterial({ color: 0x3a2416, roughness: 0.8 });
+        const cap = new THREE.Mesh(
+            new THREE.CylinderGeometry(chimneyRadius * 1.3, chimneyRadius * 1.3, 0.15, 8),
+            capMaterial
+        );
+        cap.position.copy(chimney.position);
+        cap.position.y += chimneyHeight / 2 + 0.1;
+        group.add(cap);
+
+        // Create smoke particle system
+        const smokeParticles = this.createSmokeParticles(chimney.position, isFamilyHome);
+        smokeParticles.forEach(particle => group.add(particle));
+
+        // Store smoke data for animation
+        home.smokeData = {
+            particles: smokeParticles,
+            chimneyPosition: chimney.position.clone(),
+            isFamilyHome: isFamilyHome,
+            time: Math.random() * Math.PI * 2, // Random phase for natural variation
+        };
+
         group.position.copy(home.location);
         group.position.y = 0;
         group.lookAt(0, 0, 0);
@@ -881,6 +1247,353 @@ class SceneManager {
             group.userData = {};
         }
         group.userData.structureId = home.id;
+
+        // Add bed indicators
+        this.updateHomeVisuals(home);
+
+        // Initially hide smoke (will show when villagers are inside)
+        this.updateHomeSmoke(home);
+    }
+
+    createSmokeParticles(chimneyPosition, isFamilyHome) {
+        // Create smoke texture using canvas
+        const canvas = document.createElement('canvas');
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+
+        // Create radial gradient for soft smoke puff
+        const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        gradient.addColorStop(0, 'rgba(220, 220, 220, 0.8)');
+        gradient.addColorStop(0.4, 'rgba(200, 200, 200, 0.5)');
+        gradient.addColorStop(0.7, 'rgba(180, 180, 180, 0.2)');
+        gradient.addColorStop(1, 'rgba(160, 160, 160, 0)');
+
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 64, 64);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        const smokeMaterial = new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+            opacity: 0,
+            depthWrite: false,
+            blending: THREE.NormalBlending,
+        });
+
+        // Create multiple smoke puffs for continuous effect
+        const particleCount = isFamilyHome ? 5 : 4;
+        const particles = [];
+
+        for (let i = 0; i < particleCount; i++) {
+            const particle = new THREE.Sprite(smokeMaterial.clone());
+            const baseScale = isFamilyHome ? 0.4 : 0.35;
+            particle.scale.set(baseScale, baseScale, 1);
+
+            // Store particle-specific data
+            particle.userData = {
+                offset: (i / particleCount) * Math.PI * 2, // Phase offset for staggered appearance
+                baseY: chimneyPosition.y + (isFamilyHome ? 0.75 : 0.65),
+                progress: i / particleCount, // Stagger initial positions
+                driftPhase: Math.random() * Math.PI * 2,
+            };
+
+            // Initial position at chimney top
+            particle.position.copy(chimneyPosition);
+            particle.position.y = particle.userData.baseY + particle.userData.progress * 1.5;
+
+            particles.push(particle);
+        }
+
+        return particles;
+    }
+
+    updateHomeSmoke(home) {
+        if (!home.smokeData || !home.structure) return;
+
+        const hasOccupants = home.occupantsInside && home.occupantsInside.size > 0;
+        const particles = home.smokeData.particles;
+
+        // Show/hide smoke based on occupancy
+        particles.forEach(particle => {
+            if (particle.material) {
+                // Fade in/out smoothly
+                const targetOpacity = hasOccupants ? 1 : 0;
+                particle.material.opacity = THREE.MathUtils.lerp(
+                    particle.material.opacity,
+                    targetOpacity,
+                    0.05
+                );
+            }
+        });
+    }
+
+    animateHomeSmoke(home, delta) {
+        if (!home.smokeData || !home.structure) return;
+        if (!home.occupantsInside || home.occupantsInside.size === 0) return;
+
+        const data = home.smokeData;
+        data.time += delta * 0.5;
+
+        data.particles.forEach((particle) => {
+            const userData = particle.userData;
+
+            // Update particle progress (rise)
+            userData.progress += delta * 0.15; // Rise speed
+
+            // Reset when particle reaches top
+            if (userData.progress > 1) {
+                userData.progress = 0;
+                userData.driftPhase = Math.random() * Math.PI * 2;
+            }
+
+            // Calculate position
+            const riseHeight = 1.5 * userData.progress;
+            const drift = Math.sin(data.time + userData.driftPhase) * 0.3 * userData.progress;
+
+            particle.position.x = data.chimneyPosition.x + drift;
+            particle.position.y = userData.baseY + riseHeight;
+            particle.position.z = data.chimneyPosition.z + Math.cos(data.time + userData.driftPhase) * 0.15 * userData.progress;
+
+            // Scale grows as it rises
+            const scale = (data.isFamilyHome ? 0.4 : 0.35) * (1 + userData.progress * 0.8);
+            particle.scale.set(scale, scale, 1);
+
+            // Opacity fades as it rises
+            if (particle.material) {
+                const fadeStart = 0.6;
+                let opacity = 1.0;
+
+                if (userData.progress > fadeStart) {
+                    opacity = 1 - ((userData.progress - fadeStart) / (1 - fadeStart));
+                }
+
+                // Also fade based on general visibility
+                opacity *= Math.min(1, particle.material.opacity * 2);
+                particle.material.opacity = opacity * 0.7; // Max opacity 0.7 for subtle effect
+            }
+        });
+    }
+
+    createStorehouseStructure(storehouse) {
+        const group = new THREE.Group();
+
+        // Create foundation/yard area (larger flat surface)
+        const yardGeometry = new THREE.BoxGeometry(10, 0.3, 8);
+        const yardMaterial = new THREE.MeshStandardMaterial({ color: 0x786950, roughness: 0.85 });
+        const yard = new THREE.Mesh(yardGeometry, yardMaterial);
+        yard.position.y = 0.15;
+        group.add(yard);
+
+        // Main building foundation
+        const foundationGeometry = new THREE.BoxGeometry(7, 0.4, 5.5);
+        const foundationMaterial = new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 0.9 });
+        const foundation = new THREE.Mesh(foundationGeometry, foundationMaterial);
+        foundation.position.y = 0.5;
+        group.add(foundation);
+
+        // Main walls (barn-style)
+        const wallGeometry = new THREE.BoxGeometry(6.5, 3.5, 5);
+        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x8b4513, roughness: 0.8 });
+        const walls = new THREE.Mesh(wallGeometry, wallMaterial);
+        walls.position.y = 2.2;
+        group.add(walls);
+
+        // Wooden planks detailing (vertical supports)
+        const plankMaterial = new THREE.MeshStandardMaterial({ color: 0x6b3410, roughness: 0.85 });
+        for (let i = -2; i <= 2; i++) {
+            const plank = new THREE.Mesh(
+                new THREE.BoxGeometry(0.15, 3.5, 0.15),
+                plankMaterial
+            );
+            plank.position.set(i * 1.5, 2.2, 2.55);
+            group.add(plank);
+        }
+
+        // Pitched roof (barn-style)
+        const roofMaterial = new THREE.MeshStandardMaterial({ color: 0x5a2d0c, roughness: 0.6 });
+        const roofLeft = new THREE.Mesh(
+            new THREE.BoxGeometry(7.2, 0.2, 3.5),
+            roofMaterial
+        );
+        roofLeft.position.set(0, 4.5, -0.8);
+        roofLeft.rotation.z = Math.PI * 0.25;
+        group.add(roofLeft);
+
+        const roofRight = new THREE.Mesh(
+            new THREE.BoxGeometry(7.2, 0.2, 3.5),
+            roofMaterial
+        );
+        roofRight.position.set(0, 4.5, 0.8);
+        roofRight.rotation.z = -Math.PI * 0.25;
+        group.add(roofRight);
+
+        // Large barn doors
+        const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x3d2010, roughness: 0.7 });
+        const leftDoor = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.8, 0.12), doorMaterial);
+        leftDoor.position.set(-0.75, 1.9, 2.56);
+        group.add(leftDoor);
+
+        const rightDoor = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.8, 0.12), doorMaterial);
+        rightDoor.position.set(0.75, 1.9, 2.56);
+        group.add(rightDoor);
+
+        // Door handles
+        const handleMaterial = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, metalness: 0.6, roughness: 0.4 });
+        const handleLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.3, 8), handleMaterial);
+        handleLeft.position.set(-0.3, 1.9, 2.62);
+        handleLeft.rotation.z = Math.PI / 2;
+        group.add(handleLeft);
+
+        const handleRight = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.3, 8), handleMaterial);
+        handleRight.position.set(1.2, 1.9, 2.62);
+        handleRight.rotation.z = Math.PI / 2;
+        group.add(handleRight);
+
+        // Windows on sides
+        const windowMaterial = new THREE.MeshStandardMaterial({ color: 0xa0876e, transparent: true, opacity: 0.7, roughness: 0.3 });
+        const windowLeft1 = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.9), windowMaterial);
+        windowLeft1.position.set(-3.29, 2.5, 0.8);
+        group.add(windowLeft1);
+
+        const windowLeft2 = windowLeft1.clone();
+        windowLeft2.position.z = -0.8;
+        group.add(windowLeft2);
+
+        const windowRight1 = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.9), windowMaterial);
+        windowRight1.position.set(3.29, 2.5, 0.8);
+        group.add(windowRight1);
+
+        const windowRight2 = windowRight1.clone();
+        windowRight2.position.z = -0.8;
+        group.add(windowRight2);
+
+        // Storage crates in yard (decorative)
+        const crateMaterial = new THREE.MeshStandardMaterial({ color: 0x6b5d4f, roughness: 0.9 });
+        for (let i = 0; i < 3; i++) {
+            const crate = new THREE.Mesh(
+                new THREE.BoxGeometry(0.6, 0.6, 0.6),
+                crateMaterial
+            );
+            const angle = (i / 3) * Math.PI * 2;
+            crate.position.set(
+                3.5 + Math.cos(angle) * 0.8,
+                0.6,
+                -2 + Math.sin(angle) * 0.8
+            );
+            crate.rotation.y = Math.random() * Math.PI / 4;
+            group.add(crate);
+        }
+
+        // Fence posts around yard
+        const fencePostMaterial = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.85 });
+        const fencePositions = [
+            { x: -5, z: -4 }, { x: -2.5, z: -4 }, { x: 0, z: -4 }, { x: 2.5, z: -4 }, { x: 5, z: -4 },
+            { x: -5, z: 4 }, { x: -2.5, z: 4 }, { x: 0, z: 4 }, { x: 2.5, z: 4 }, { x: 5, z: 4 },
+            { x: -5, z: -2 }, { x: -5, z: 0 }, { x: -5, z: 2 },
+            { x: 5, z: -2 }, { x: 5, z: 0 }, { x: 5, z: 2 },
+        ];
+
+        fencePositions.forEach(pos => {
+            const post = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.08, 0.08, 1.2, 8),
+                fencePostMaterial
+            );
+            post.position.set(pos.x, 0.9, pos.z);
+            group.add(post);
+        });
+
+        // Lantern lighting
+        const lanternMaterial = new THREE.MeshStandardMaterial({
+            color: 0xffd27a,
+            emissive: 0xffb347,
+            emissiveIntensity: 0.5
+        });
+        const lantern = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 12), lanternMaterial);
+        lantern.position.set(2.2, 2.8, 2.8);
+        group.add(lantern);
+
+        const lanternLight = new THREE.PointLight(0xffb066, 1.5, 14);
+        lanternLight.position.copy(lantern.position);
+        group.add(lanternLight);
+
+        // Position and add to scene
+        group.position.copy(storehouse.location);
+        group.position.y = 0;
+        group.lookAt(0, 0, 0); // Face town center
+        this.scene.add(group);
+        this.obstacles.push(group);
+
+        storehouse.structure = group;
+        if (!group.userData) {
+            group.userData = {};
+        }
+        group.userData.structureType = 'storehouse';
+    }
+
+    updateHomeVisuals(home) {
+        if (!home.structure) return;
+
+        // Remove existing bed indicators
+        const bedIndicators = home.structure.children.filter(child => child.userData?.isBedIndicator);
+        bedIndicators.forEach(indicator => home.structure.remove(indicator));
+
+        // Count built beds
+        const occupantIds = [home.occupantId, home.partnerId].filter(Boolean);
+        const builtBeds = occupantIds.filter(id => {
+            const bedEntry = home.beds[id];
+            return bedEntry && bedEntry.built;
+        }).length;
+
+        // Add bed indicators for built beds
+        const isFamilyHome = home.type === 'family';
+        const bedMaterial = new THREE.MeshStandardMaterial({
+            color: 0x8b7355, // Bed frame color
+            roughness: 0.7
+        });
+        const blanketMaterial = new THREE.MeshStandardMaterial({
+            color: 0xe6d7c3, // Light blanket color
+            roughness: 0.8
+        });
+
+        if (builtBeds > 0) {
+            // Position bed indicators visible through or near windows
+            const bedPositions = isFamilyHome ?
+                [{ x: -1.3, y: 0.6, z: 0.5 }, { x: -1.3, y: 0.6, z: -0.5 }] :
+                [{ x: 0, y: 0.5, z: 0 }];
+
+            for (let i = 0; i < builtBeds && i < bedPositions.length; i++) {
+                const bedGroup = new THREE.Group();
+                bedGroup.userData.isBedIndicator = true;
+
+                // Bed frame
+                const frameGeometry = new THREE.BoxGeometry(0.4, 0.15, 0.7);
+                const frame = new THREE.Mesh(frameGeometry, bedMaterial);
+                bedGroup.add(frame);
+
+                // Mattress/blanket
+                const mattressGeometry = new THREE.BoxGeometry(0.35, 0.1, 0.65);
+                const mattress = new THREE.Mesh(mattressGeometry, blanketMaterial);
+                mattress.position.y = 0.125;
+                bedGroup.add(mattress);
+
+                // Pillow
+                const pillowGeometry = new THREE.BoxGeometry(0.25, 0.08, 0.2);
+                const pillow = new THREE.Mesh(pillowGeometry, new THREE.MeshStandardMaterial({
+                    color: 0xf0e6d2,
+                    roughness: 0.9
+                }));
+                pillow.position.set(0, 0.17, -0.2);
+                bedGroup.add(pillow);
+
+                // Position the bed
+                const pos = bedPositions[i];
+                bedGroup.position.set(pos.x, pos.y, pos.z);
+                bedGroup.rotation.y = Math.PI / 2; // Rotate to face properly
+
+                home.structure.add(bedGroup);
+            }
+        }
     }
 
     getHomeById(id) {
@@ -944,6 +1657,27 @@ class SceneManager {
                     const name = document.createElement('div');
                     name.className = 'name';
                     name.textContent = villager.name;
+
+                    // Add "inside home" icon if villager is currently inside
+                    const isInside = home.occupantsInside && home.occupantsInside.has(id);
+                    if (isInside) {
+                        const insideIcon = document.createElement('span');
+                        insideIcon.textContent = ' 🏠';
+                        insideIcon.style.fontSize = '0.9em';
+                        insideIcon.title = 'Currently inside home';
+                        name.appendChild(insideIcon);
+                    }
+
+                    // Add bed icon if villager has a bed
+                    const bedEntry = home.beds[id];
+                    if (bedEntry && bedEntry.built) {
+                        const bedIcon = document.createElement('span');
+                        bedIcon.textContent = ' 🛏️';
+                        bedIcon.style.fontSize = '0.9em';
+                        bedIcon.title = 'Has a bed';
+                        name.appendChild(bedIcon);
+                    }
+
                     const tag = document.createElement('div');
                     tag.className = 'tag';
                     if (home.partnerId && id === home.partnerId) {
@@ -958,18 +1692,78 @@ class SceneManager {
                     status.textContent = villager.getProfessionLabel();
                     item.appendChild(info);
                     item.appendChild(status);
-                    item.addEventListener('click', () => {
+
+                    // Add "Build Bed" button if no bed and home is built
+                    if (home.built && bedEntry && !bedEntry.built && !bedEntry.building) {
+                        const buildBedBtn = document.createElement('button');
+                        const req = this.bedRequirements;
+                        const hasResources = this.inventory.wood >= req.wood && this.inventory.leaves >= req.leaves;
+
+                        if (hasResources) {
+                            buildBedBtn.textContent = 'Build Bed';
+                            buildBedBtn.title = `Use ${req.wood} wood, ${req.leaves} leaves from village stores`;
+                        } else {
+                            buildBedBtn.textContent = 'Gather & Build';
+                            buildBedBtn.title = `${villager.name} will gather ${req.wood} wood & ${req.leaves} leaves, then build the bed`;
+                        }
+
+                        buildBedBtn.className = 'build-bed-btn';
+                        buildBedBtn.style.cssText = 'padding: 4px 8px; font-size: 0.8em; margin-left: 8px; cursor: pointer;';
+
+                        buildBedBtn.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            this.requestManualBedBuild(home, id);
+                        });
+                        item.appendChild(buildBedBtn);
+                    } else if (bedEntry && bedEntry.building) {
+                        const buildingText = document.createElement('span');
+
+                        // Check if villager is gathering resources themselves
+                        if (villager.specialTask && villager.specialTask.type === 'buildOwnBed') {
+                            const task = villager.specialTask;
+                            if (task.state === 'gatherWood') {
+                                buildingText.textContent = `Gathering wood (${task.woodGathered}/${task.woodNeeded})`;
+                            } else if (task.state === 'gatherLeaves') {
+                                buildingText.textContent = `Gathering leaves (${task.leavesGathered}/${task.leavesNeeded})`;
+                            } else if (task.state === 'buildBed') {
+                                buildingText.textContent = 'Building...';
+                            }
+                        } else {
+                            buildingText.textContent = 'Building...';
+                        }
+
+                        buildingText.style.cssText = 'font-size: 0.8em; color: #888; margin-left: 8px;';
+                        item.appendChild(buildingText);
+                    }
+
+                    // Make the name area clickable to open villager modal
+                    info.addEventListener('click', () => {
                         this.hideStructureModal();
                         this.openVillagerModal(villager);
                     });
+                    info.style.cursor = 'pointer';
+
                     list.appendChild(item);
                 });
             }
         }
 
         if (details) {
-            const builtText = home.built ? 'This home is ready and welcoming.' : 'Construction is underway.';
-            details.textContent = builtText;
+            let detailText = home.built ? 'This home is ready and welcoming.' : 'Construction is underway.';
+
+            // Show who's currently inside the home
+            if (home.occupantsInside && home.occupantsInside.size > 0) {
+                const insideNames = Array.from(home.occupantsInside)
+                    .map(id => this.getVillagerById(id))
+                    .filter(Boolean)
+                    .map(v => v.name);
+
+                if (insideNames.length > 0) {
+                    detailText += `\n\nCurrently inside: ${insideNames.join(', ')}`;
+                }
+            }
+
+            details.textContent = detailText;
         }
     }
 
@@ -980,6 +1774,16 @@ class SceneManager {
         if (!home || !home.structure) {
             this.hideStructureModal();
             return;
+        }
+
+        // Periodically refresh modal content to show bed building progress
+        if (!this.structureModalRefreshTimer) {
+            this.structureModalRefreshTimer = 0;
+        }
+        this.structureModalRefreshTimer += 0.016; // Approximate delta for 60fps
+        if (this.structureModalRefreshTimer >= 1.0) { // Refresh every second
+            this.structureModalRefreshTimer = 0;
+            this.populateStructureModal(home);
         }
     }
 
@@ -1101,7 +1905,7 @@ class SceneManager {
         return `${gender === 'male' ? 'Brother' : 'Sister'} ${String(this.nextVillagerId).padStart(2, '0')}`;
     }
 
-    findResourceNodeForVillager(villager) {
+    findResourceNodeForVillager(villager, preferredType = null) {
         if (villager.currentResource && !villager.currentResource.depleted && villager.currentResource.remaining > 0) {
             return villager.currentResource;
         }
@@ -1112,7 +1916,8 @@ class SceneManager {
             leaves: this.resourceNodes.bushes,
         };
 
-        const typeOrder = this.getPreferredResourceTypes();
+        // If a specific type is requested, only search for that type
+        const typeOrder = preferredType ? [preferredType] : this.getPreferredResourceTypes();
 
         for (const type of typeOrder) {
             const pool = pools[type];
@@ -1817,6 +2622,14 @@ class SceneManager {
 
         this.updateBonfireFlicker(worldDelta);
 
+        // Update chimney smoke for all homes
+        this.homes.forEach(home => {
+            if (home.built && home.smokeData) {
+                this.updateHomeSmoke(home);
+                this.animateHomeSmoke(home, worldDelta);
+            }
+        });
+
         if (this.structureModalVisible) {
             this.updateStructureModalPosition();
         }
@@ -1861,6 +2674,7 @@ class Villager {
         this.romanticPartnerId = null;
         this.socialMeter = 60 + Math.random() * 25;
         this.socialCooldown = Math.random() * 5;
+        this.energy = 100; // Energy system: 0-100, depletes during day, restores at night (faster with bed)
     }
 
     setProfession(professionId) {
@@ -1919,6 +2733,11 @@ class Villager {
     }
 
     update(delta, obstacles) {
+        // Gradual energy depletion during the day (not at night when resting)
+        if (!this.manager.isNight() && this.energy > 0) {
+            this.energy = Math.max(0, this.energy - 0.015); // Slow depletion
+        }
+
         if (this.specialTask) {
             if (this.updateSpecialTask(delta, obstacles)) {
                 return;
@@ -2092,7 +2911,18 @@ class Villager {
             }
 
             if (task.state === 'travel') {
-                if (this.moveTowardsTarget(delta, 0.8)) {
+                // Check if close enough to home to start building (prevents getting stuck on obstacles)
+                const distanceToHome = this.mesh.position.distanceTo(home.location);
+                const reachedTarget = this.moveTowardsTarget(delta, 0.8);
+
+                // Initialize travel timer to detect if stuck
+                if (!task.travelTimer) {
+                    task.travelTimer = 0;
+                }
+                task.travelTimer += delta;
+
+                // Start building if reached target, close enough to home, or stuck for too long
+                if (reachedTarget || distanceToHome < 4.5 || task.travelTimer > 8) {
                     task.state = 'building';
                     task.buildTimer = 0;
                     task.buildDuration = task.buildDuration ?? (4 + Math.random() * 2);
@@ -2107,6 +2937,262 @@ class Villager {
                     this.finishSpecialTask();
                 } else {
                     this.faceTowards(home.location);
+                }
+            }
+            return true;
+        }
+
+        if (task.type === 'buildBed') {
+            const home = this.manager.getHomeById(task.homeId);
+            if (!home || !home.beds[task.occupantId]) {
+                this.finishSpecialTask();
+                return false;
+            }
+
+            const bedEntry = home.beds[task.occupantId];
+            if (bedEntry.builderId !== this.id || bedEntry.built) {
+                this.finishSpecialTask();
+                return false;
+            }
+
+            if (!task.target) {
+                task.target = home.location.clone().add(new THREE.Vector3(Math.random() * 0.4 - 0.2, 0, Math.random() * 0.4 - 0.2));
+                this.target = task.target.clone();
+            }
+
+            if (task.state === 'travel') {
+                // Check if close enough to home to start building (prevents getting stuck on obstacles)
+                const distanceToHome = this.mesh.position.distanceTo(home.location);
+                const reachedTarget = this.moveTowardsTarget(delta, 0.8);
+
+                // Initialize travel timer to detect if stuck
+                if (!task.travelTimer) {
+                    task.travelTimer = 0;
+                }
+                task.travelTimer += delta;
+
+                // Start building if reached target, close enough to home, or stuck for too long
+                if (reachedTarget || distanceToHome < 3.5 || task.travelTimer > 8) {
+                    task.state = 'building';
+                    task.buildTimer = 0;
+                    task.buildDuration = task.buildDuration ?? (2.5 + Math.random() * 1);
+                    this.target = null;
+                } else {
+                    this.avoidObstacles(obstacles, true);
+                }
+            } else if (task.state === 'building') {
+                task.buildTimer += delta;
+                if (task.buildTimer >= task.buildDuration) {
+                    this.manager.finishBedConstruction(home, task.occupantId, this);
+                    this.finishSpecialTask();
+                } else {
+                    this.faceTowards(home.location);
+                }
+            }
+            return true;
+        }
+
+        if (task.type === 'buildOwnBed') {
+            const home = this.manager.getHomeById(task.homeId);
+            if (!home || !home.beds[task.occupantId]) {
+                this.finishSpecialTask();
+                return false;
+            }
+
+            const bedEntry = home.beds[task.occupantId];
+            if (bedEntry.builderId !== this.id || bedEntry.built) {
+                this.finishSpecialTask();
+                return false;
+            }
+
+            // State: gatherWood - find and gather wood resources
+            if (task.state === 'gatherWood') {
+                if (task.woodGathered >= task.woodNeeded) {
+                    // Move to gathering leaves
+                    task.state = 'gatherLeaves';
+                    this.currentResource = null;
+                    this.carrying = null;
+                    this.target = null;
+                    return true;
+                }
+
+                // Use normal gathering behavior to get wood
+                if (!this.currentResource || this.currentResource.type !== 'wood') {
+                    const woodNode = this.manager.findResourceNodeForVillager(this, 'wood');
+                    if (woodNode) {
+                        this.currentResource = woodNode;
+                        this.target = this.getResourceApproachPoint(woodNode);
+                        task.subState = 'movingToResource';
+                    } else {
+                        // Wander looking for wood
+                        if (!this.target || this.mesh.position.distanceTo(this.target) < 0.8) {
+                            this.target = this.getRandomTarget(true);
+                        }
+                        this.moveTowardsTarget(delta, 0.8);
+                        this.avoidObstacles(obstacles);
+                    }
+                    return true;
+                }
+
+                if (task.subState === 'movingToResource') {
+                    if (this.moveTowardsTarget(delta, 0.8)) {
+                        task.subState = 'gathering';
+                        task.gatherTimer = 0;
+                    } else {
+                        this.avoidObstacles(obstacles);
+                    }
+                } else if (task.subState === 'gathering') {
+                    task.gatherTimer = (task.gatherTimer || 0) + delta;
+                    if (task.gatherTimer >= 2.2) {
+                        const amountGathered = Math.min(8, task.woodNeeded - task.woodGathered);
+                        task.woodGathered += amountGathered;
+                        this.currentResource.remaining -= amountGathered;
+                        if (this.currentResource.remaining <= 0) {
+                            this.manager.depleteResourceNode(this.currentResource);
+                        }
+                        this.manager.releaseResourceClaim(this.currentResource, this);
+                        this.currentResource = null;
+                        this.target = null;
+                        task.subState = null;
+                        task.gatherTimer = 0;
+                    }
+                }
+                return true;
+            }
+
+            // State: gatherLeaves - find and gather leaf resources
+            if (task.state === 'gatherLeaves') {
+                if (task.leavesGathered >= task.leavesNeeded) {
+                    // Move to building
+                    task.state = 'buildBed';
+                    this.currentResource = null;
+                    this.carrying = null;
+                    this.target = home.location.clone().add(new THREE.Vector3(Math.random() * 0.4 - 0.2, 0, Math.random() * 0.4 - 0.2));
+                    return true;
+                }
+
+                // Use normal gathering behavior to get leaves
+                if (!this.currentResource || this.currentResource.type !== 'leaves') {
+                    const leavesNode = this.manager.findResourceNodeForVillager(this, 'leaves');
+                    if (leavesNode) {
+                        this.currentResource = leavesNode;
+                        this.target = this.getResourceApproachPoint(leavesNode);
+                        task.subState = 'movingToResource';
+                    } else {
+                        // Wander looking for leaves
+                        if (!this.target || this.mesh.position.distanceTo(this.target) < 0.8) {
+                            this.target = this.getRandomTarget(true);
+                        }
+                        this.moveTowardsTarget(delta, 0.8);
+                        this.avoidObstacles(obstacles);
+                    }
+                    return true;
+                }
+
+                if (task.subState === 'movingToResource') {
+                    if (this.moveTowardsTarget(delta, 0.8)) {
+                        task.subState = 'gathering';
+                        task.gatherTimer = 0;
+                    } else {
+                        this.avoidObstacles(obstacles);
+                    }
+                } else if (task.subState === 'gathering') {
+                    task.gatherTimer = (task.gatherTimer || 0) + delta;
+                    if (task.gatherTimer >= 2.2) {
+                        const amountGathered = Math.min(8, task.leavesNeeded - task.leavesGathered);
+                        task.leavesGathered += amountGathered;
+                        this.currentResource.remaining -= amountGathered;
+                        if (this.currentResource.remaining <= 0) {
+                            this.manager.depleteResourceNode(this.currentResource);
+                        }
+                        this.manager.releaseResourceClaim(this.currentResource, this);
+                        this.currentResource = null;
+                        this.target = null;
+                        task.subState = null;
+                        task.gatherTimer = 0;
+                    }
+                }
+                return true;
+            }
+
+            // State: buildBed - travel to home and build the bed
+            if (task.state === 'buildBed') {
+                if (task.subState === 'travel' || !task.subState) {
+                    task.subState = 'travel';
+
+                    // Check if close enough to home to start building (prevents getting stuck)
+                    const distanceToHome = this.mesh.position.distanceTo(home.location);
+                    const reachedTarget = this.moveTowardsTarget(delta, 0.8);
+
+                    // Initialize travel timer to detect if stuck
+                    if (!task.buildTravelTimer) {
+                        task.buildTravelTimer = 0;
+                    }
+                    task.buildTravelTimer += delta;
+
+                    // Start building if reached target, close enough to home, or stuck for too long
+                    if (reachedTarget || distanceToHome < 3.5 || task.buildTravelTimer > 8) {
+                        task.subState = 'building';
+                        task.buildTimer = 0;
+                        task.buildDuration = 2.5 + Math.random() * 1;
+                        this.target = null;
+                    } else {
+                        this.avoidObstacles(obstacles, true);
+                    }
+                } else if (task.subState === 'building') {
+                    task.buildTimer += delta;
+                    if (task.buildTimer >= task.buildDuration) {
+                        this.manager.finishBedConstruction(home, task.occupantId);
+                        this.finishSpecialTask();
+                    } else {
+                        this.faceTowards(home.location);
+                    }
+                }
+                return true;
+            }
+
+            return true;
+        }
+
+        if (task.type === 'buildStorehouse') {
+            const storehouse = this.manager.storehouse;
+            if (!storehouse || storehouse.builderId !== this.id) {
+                this.finishSpecialTask();
+                return false;
+            }
+
+            if (!task.target) {
+                task.target = storehouse.location.clone().add(new THREE.Vector3(Math.random() * 0.4 - 0.2, 0, Math.random() * 0.4 - 0.2));
+                this.target = task.target.clone();
+            }
+
+            if (task.state === 'travel') {
+                // Check if close enough to storehouse location to start building
+                const distanceToStorehouse = this.mesh.position.distanceTo(storehouse.location);
+                const reachedTarget = this.moveTowardsTarget(delta, 0.8);
+
+                // Initialize travel timer to detect if stuck
+                if (!task.travelTimer) {
+                    task.travelTimer = 0;
+                }
+                task.travelTimer += delta;
+
+                // Start building if reached target, close enough, or stuck for too long
+                if (reachedTarget || distanceToStorehouse < 4.0 || task.travelTimer > 8) {
+                    task.state = 'building';
+                    task.buildTimer = 0;
+                    task.buildDuration = task.buildDuration ?? (8 + Math.random() * 3); // Longer build time for storehouse
+                    this.target = null;
+                } else {
+                    this.avoidObstacles(obstacles, true);
+                }
+            } else if (task.state === 'building') {
+                task.buildTimer += delta;
+                if (task.buildTimer >= task.buildDuration) {
+                    this.manager.finishStorehouseConstruction();
+                    this.finishSpecialTask();
+                } else {
+                    this.faceTowards(storehouse.location);
                 }
             }
             return true;
@@ -2186,23 +3272,67 @@ class Villager {
         if (task.type === 'homeRest') {
             const home = this.manager.getHomeById(task.homeId);
             if (!home || !home.built) {
+                // Clean up if home is gone
+                if (home && home.occupantsInside) {
+                    home.occupantsInside.delete(this.id);
+                }
+                this.mesh.visible = true; // Make sure visible
                 this.finishSpecialTask();
                 return false;
             }
 
             if (task.state === 'travel') {
+                // Move toward home entrance
                 if (!this.target) {
                     this.target = task.target.clone();
                 }
-                if (this.moveTowardsTarget(delta, 0.8)) {
-                    task.state = 'rest';
+
+                const distanceToHome = this.mesh.position.distanceTo(home.location);
+                const reachedTarget = this.moveTowardsTarget(delta, 0.8);
+
+                // Close enough to enter the home
+                if (reachedTarget || distanceToHome < 2.0) {
+                    task.state = 'entering';
                     this.target = null;
                 } else {
                     this.avoidObstacles(obstacles, true);
                 }
-            } else if (task.state === 'rest') {
-                this.faceTowards(home.location.clone().add(new THREE.Vector3(0, 0, -10)));
+            } else if (task.state === 'entering') {
+                // Transition state: Hide villager and mark as inside
+                this.mesh.visible = false;
+                home.occupantsInside.add(this.id);
+                task.state = 'inside';
+            } else if (task.state === 'inside') {
+                // Villager is inside home (not visible in 3D world)
+                // Restore energy while resting
+                const bedEntry = home.beds[this.id];
+                const hasBed = bedEntry && bedEntry.built;
+                const restoreRate = hasBed ? 0.5 : 0.2; // Faster restoration with bed
+                this.energy = Math.min(100, this.energy + restoreRate);
+
+                // Check if it's morning (time to leave)
                 if (!this.manager.isNight()) {
+                    task.state = 'exiting';
+                    // Calculate exit position outside home
+                    const angle = Math.random() * Math.PI * 2;
+                    const exitDistance = 3.5; // Safely outside the home structure
+                    const exitPosition = home.location.clone().add(
+                        new THREE.Vector3(
+                            Math.cos(angle) * exitDistance,
+                            0,
+                            Math.sin(angle) * exitDistance
+                        )
+                    );
+
+                    // Position villager at exit location
+                    this.mesh.position.copy(exitPosition);
+                    this.mesh.position.y = 0;
+
+                    // Make visible and remove from inside tracking
+                    this.mesh.visible = true;
+                    home.occupantsInside.delete(this.id);
+
+                    // Complete the rest task
                     this.finishSpecialTask();
                 }
             }
@@ -2240,11 +3370,63 @@ class Villager {
         this.state = 'special';
     }
 
+    assignBedConstruction(home, occupantId) {
+        this.manager.releaseResourceClaim(this.currentResource, this);
+        this.currentResource = null;
+        this.carrying = null;
+        this.specialTask = {
+            type: 'buildBed',
+            homeId: home.id,
+            occupantId: occupantId,
+            state: 'travel',
+            target: home.location.clone().add(new THREE.Vector3(Math.random() * 0.4 - 0.2, 0, Math.random() * 0.4 - 0.2)),
+        };
+        this.target = this.specialTask.target.clone();
+        this.state = 'special';
+    }
+
+    assignSelfBedConstruction(home, occupantId) {
+        this.manager.releaseResourceClaim(this.currentResource, this);
+        this.currentResource = null;
+        this.carrying = null;
+        this.specialTask = {
+            type: 'buildOwnBed',
+            homeId: home.id,
+            occupantId: occupantId,
+            state: 'gatherWood',
+            woodGathered: 0,
+            leavesGathered: 0,
+            woodNeeded: this.manager.bedRequirements.wood,
+            leavesNeeded: this.manager.bedRequirements.leaves,
+        };
+        this.state = 'special';
+        this.target = null;
+    }
+
+    assignStorehouseConstruction() {
+        this.manager.releaseResourceClaim(this.currentResource, this);
+        this.currentResource = null;
+        this.carrying = null;
+        this.specialTask = {
+            type: 'buildStorehouse',
+            state: 'travel',
+            target: this.manager.storehouse.location.clone().add(new THREE.Vector3(Math.random() * 0.4 - 0.2, 0, Math.random() * 0.4 - 0.2)),
+        };
+        this.target = this.specialTask.target.clone();
+        this.state = 'special';
+    }
+
+    isInsideHome() {
+        const home = this.manager.getHomeForVillager(this);
+        return home && home.occupantsInside && home.occupantsInside.has(this.id);
+    }
+
     shouldReturnHome() {
         if (!this.manager.isNight()) return false;
         const home = this.manager.getHomeForVillager(this);
         if (!home || !home.built) return false;
         if (this.specialTask) return false;
+        if (this.isInsideHome()) return false; // Already inside
         if (!this.isGatheringProfession() && this.socialCooldown > 0 && this.socialMeter > 50) {
             return false;
         }
@@ -2297,6 +3479,16 @@ class Villager {
     finishSpecialTask() {
         const completedTask = this.specialTask;
         this.specialTask = null;
+
+        // Clean up homeRest state - ensure villager is visible and removed from inside tracking
+        if (completedTask?.type === 'homeRest') {
+            this.mesh.visible = true; // Always make visible when finishing
+            const home = completedTask.homeId ? this.manager.getHomeById(completedTask.homeId) : null;
+            if (home && home.occupantsInside) {
+                home.occupantsInside.delete(this.id);
+            }
+        }
+
         if (completedTask?.type === 'socialize') {
             const partner = completedTask.partnerId ? this.manager.getVillagerById(completedTask.partnerId) : null;
             if (partner) {
@@ -2326,6 +3518,7 @@ class Villager {
 
     canTakeConstruction() {
         if (this.specialTask) return false;
+        if (this.isInsideHome()) return false; // Can't take tasks while inside home
         if (!this.isGatheringProfession()) return true;
         return !this.carrying && (!this.currentResource || this.state === 'seekingResource');
     }
