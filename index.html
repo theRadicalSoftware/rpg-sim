@@ -1,16 +1,619 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Three.js RPG Simulator</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎮</text></svg>">
-    <style>
-        body { margin: 0; }
-        canvas { display: block; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Three.js RPG Simulator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎮</text></svg>">
+<style>
+    :root {
+        color-scheme: dark;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    body {
+        margin: 0;
+        background: radial-gradient(circle at top, #1d1f2a 0%, #0d1018 40%, #05070c 100%);
+        color: #f0f4f9;
+    }
+
+    canvas {
+        display: block;
+    }
+
+    #ui-root {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        display: flex;
+    }
+
+    #resource-panel {
+        margin: 16px;
+        padding: 18px 22px;
+        border-radius: 16px;
+        background: rgba(22, 28, 39, 0.78);
+        box-shadow: 0 12px 28px rgba(3, 6, 12, 0.4);
+        border: 1px solid rgba(120, 190, 255, 0.18);
+        width: clamp(220px, 24vw, 280px);
+        pointer-events: none;
+        backdrop-filter: blur(14px);
+    }
+
+    #time-panel {
+        position: absolute;
+        bottom: 18px;
+        right: 18px;
+        padding: 16px 18px;
+        border-radius: 14px;
+        background: rgba(18, 24, 34, 0.82);
+        border: 1px solid rgba(126, 190, 240, 0.22);
+        box-shadow: 0 10px 26px rgba(3, 8, 16, 0.4);
+        pointer-events: auto;
+        backdrop-filter: blur(16px);
+        color: #e5f0fd;
+        min-width: 210px;
+    }
+
+    #time-panel .time-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 10px;
+    }
+
+    #time-panel .time-header .label {
+        font-size: 0.72rem;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: rgba(205, 224, 242, 0.68);
+    }
+
+    #clock-display {
+        font-size: 1.4rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        color: #f5fbff;
+    }
+
+    #time-speed-buttons {
+        display: flex;
+        gap: 8px;
+        justify-content: space-between;
+    }
+
+    #time-speed-buttons button {
+        flex: 1 1 0;
+        padding: 8px 0;
+        border-radius: 999px;
+        border: 1px solid rgba(138, 198, 250, 0.22);
+        background: rgba(8, 12, 18, 0.65);
+        color: #d8e9ff;
+        font-size: 0.82rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        cursor: pointer;
+        transition: filter 0.16s ease, transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+    }
+
+    #time-speed-buttons button:hover {
+        filter: brightness(1.1);
+        transform: translateY(-1px);
+    }
+
+    #time-speed-buttons button.active {
+        background: linear-gradient(135deg, rgba(125, 206, 255, 0.35), rgba(102, 166, 255, 0.48));
+        border-color: rgba(148, 209, 255, 0.65);
+        color: #0a2c4f;
+        box-shadow: 0 6px 16px rgba(20, 110, 220, 0.26);
+    }
+
+    #resource-panel h2 {
+        font-size: 1.1rem;
+        margin: 0 0 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #d8edf9;
+    }
+
+    #resource-panel ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 10px;
+    }
+
+    #resource-panel li {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(13, 18, 26, 0.72);
+        border: 1px solid rgba(110, 165, 210, 0.18);
+    }
+
+    #resource-panel .label {
+        text-transform: uppercase;
+        font-size: 0.72rem;
+        letter-spacing: 0.18em;
+        color: rgba(221, 235, 247, 0.76);
+    }
+
+    #resource-panel .value {
+        font-size: 1rem;
+        font-weight: 600;
+        color: #f5fafc;
+    }
+
+    #villager-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 12;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.18s ease;
+    }
+
+    #villager-modal.visible {
+        opacity: 1;
+    }
+
+    #villager-modal.hidden {
+        display: none;
+    }
+
+    #villager-modal .modal-card {
+        position: relative;
+        min-width: 240px;
+        max-width: 320px;
+        padding: 22px 24px 20px;
+        border-radius: 16px;
+        background: linear-gradient(160deg, rgba(30, 41, 54, 0.96) 0%, rgba(15, 19, 27, 0.94) 100%);
+        border: 1px solid rgba(141, 204, 255, 0.35);
+        box-shadow: 0 14px 34px rgba(4, 10, 18, 0.45);
+        color: #edf4fb;
+        pointer-events: auto;
+        backdrop-filter: blur(18px);
+        --tooltip-arrow-offset: 26px;
+    }
+
+    #villager-modal .modal-card::before {
+        content: "";
+        position: absolute;
+        left: -12px;
+        top: var(--tooltip-arrow-offset);
+        width: 0;
+        height: 0;
+        border-top: 8px solid transparent;
+        border-bottom: 8px solid transparent;
+        border-right: 12px solid rgba(30, 41, 54, 0.96);
+        filter: drop-shadow(0 2px 4px rgba(3, 6, 12, 0.35));
+    }
+
+    #villager-modal .modal-card.flip-x::before {
+        left: auto;
+        right: -12px;
+        border-right: none;
+        border-left: 12px solid rgba(30, 41, 54, 0.96);
+    }
+
+    #villager-modal .close-button {
+        position: absolute;
+        top: 10px;
+        right: 12px;
+        border: none;
+        background: rgba(255, 255, 255, 0.05);
+        color: rgba(240, 248, 255, 0.76);
+        font-size: 0.95rem;
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background 0.18s ease, color 0.18s ease;
+    }
+
+    #villager-modal .close-button:hover {
+        background: rgba(255, 255, 255, 0.12);
+        color: #fff;
+    }
+
+    #villager-modal h2 {
+        margin: 0 0 4px;
+        font-size: 0.82rem;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+        color: rgba(209, 234, 255, 0.85);
+    }
+
+    #villager-modal .villager-name {
+        margin-top: 2px;
+        font-size: 1.05rem;
+        font-weight: 600;
+        color: rgba(234, 244, 255, 0.95);
+    }
+
+    #villager-modal .modal-body {
+        margin-block: 16px;
+        position: relative;
+    }
+
+    #villager-modal .modal-view {
+        display: none;
+    }
+
+    #villager-modal .modal-view.active {
+        display: grid;
+        gap: 12px;
+    }
+
+    #villager-modal .modal-field {
+        display: grid;
+        gap: 6px;
+        padding: 10px 12px 14px;
+        border-radius: 12px;
+        background: rgba(9, 14, 21, 0.74);
+        border: 1px solid rgba(118, 178, 226, 0.22);
+    }
+
+    #villager-modal .modal-field-button {
+        cursor: pointer;
+        transition: background 0.18s ease, border-color 0.18s ease;
+    }
+
+    #villager-modal .modal-field-button:hover {
+        background: rgba(15, 22, 32, 0.86);
+        border-color: rgba(152, 208, 255, 0.45);
+    }
+
+    #villager-modal .modal-field label {
+        font-size: 0.75rem;
+        color: rgba(205, 226, 245, 0.7);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+    }
+
+    #villager-modal .modal-field select {
+        appearance: none;
+        padding: 9px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(132, 190, 242, 0.3);
+        background: rgba(12, 17, 24, 0.75);
+        color: #f0f7ff;
+        font-size: 0.92rem;
+        letter-spacing: 0.03em;
+        cursor: pointer;
+        transition: border-color 0.18s ease, background 0.18s ease;
+    }
+
+    #villager-modal .modal-field select:focus {
+        outline: none;
+        border-color: rgba(162, 214, 255, 0.65);
+        background: rgba(18, 28, 40, 0.82);
+    }
+
+    #villager-modal .meter {
+        position: relative;
+        width: 100%;
+        height: 12px;
+        border-radius: 999px;
+        background: rgba(8, 12, 18, 0.65);
+        border: 1px solid rgba(126, 184, 236, 0.25);
+        overflow: hidden;
+    }
+
+    #villager-modal .meter-fill {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(135deg, rgba(118, 214, 255, 0.85), rgba(72, 138, 241, 0.9));
+        transform-origin: left;
+        transform: scaleX(0.5);
+        transition: transform 0.3s ease;
+    }
+
+    #villager-modal .meter-value {
+        font-size: 0.78rem;
+        letter-spacing: 0.06em;
+        color: rgba(210, 230, 250, 0.76);
+        text-align: right;
+    }
+
+    #villager-modal .relationship-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 8px;
+    }
+
+    #villager-modal .relationship-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 9px 12px;
+        border-radius: 10px;
+        background: rgba(12, 18, 26, 0.7);
+        border: 1px solid rgba(110, 170, 230, 0.24);
+        cursor: pointer;
+        transition: background 0.18s ease, border-color 0.18s ease;
+    }
+
+    #villager-modal .relationship-item:hover {
+        background: rgba(18, 26, 38, 0.82);
+        border-color: rgba(148, 206, 255, 0.45);
+    }
+
+    #villager-modal .relationship-item .name {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: #eef5ff;
+    }
+
+    #villager-modal .relationship-item .status {
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: rgba(200, 220, 240, 0.6);
+    }
+
+    #villager-modal .relationship-item .score {
+        font-size: 0.82rem;
+        color: rgba(210, 236, 255, 0.85);
+    }
+
+    #villager-modal .note {
+        font-size: 0.82rem;
+        line-height: 1.45;
+        color: rgba(214, 229, 245, 0.78);
+        margin: 0;
+    }
+
+    #villager-modal .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+    }
+
+    #villager-modal .modal-footer button {
+        padding: 8px 18px;
+        border-radius: 999px;
+        border: 1px solid rgba(120, 180, 240, 0.3);
+        background: rgba(10, 16, 24, 0.72);
+        color: #d5e6fb;
+        font-size: 0.88rem;
+        letter-spacing: 0.05em;
+        cursor: pointer;
+        transition: background 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+    }
+
+    #villager-modal .modal-footer button:hover {
+        background: rgba(22, 32, 46, 0.82);
+        border-color: rgba(148, 206, 255, 0.5);
+        transform: translateY(-1px);
+    }
+
+    #villager-modal .modal-nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 0 0;
+    }
+
+    #villager-modal .back-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: none;
+        background: rgba(10, 16, 24, 0.7);
+        color: #dbe8ff;
+        font-size: 0.86rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 7px 14px;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: background 0.18s ease, transform 0.18s ease;
+    }
+
+    #villager-modal .back-button:hover {
+        background: rgba(18, 26, 38, 0.85);
+        transform: translateY(-1px);
+    }
+
+    #structure-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 11;
+        pointer-events: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+    }
+
+    #structure-modal.visible {
+        opacity: 1;
+    }
+
+    #structure-modal.hidden {
+        display: none;
+    }
+
+    #structure-modal .backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(4, 6, 12, 0.72);
+        backdrop-filter: blur(8px);
+    }
+
+    #structure-modal .card {
+        position: relative;
+        max-width: clamp(320px, 40vw, 420px);
+        width: 100%;
+        pointer-events: auto;
+        padding: 26px 28px 24px;
+        border-radius: 20px;
+        background: linear-gradient(170deg, rgba(24, 34, 48, 0.96) 0%, rgba(12, 18, 28, 0.95) 100%);
+        border: 1px solid rgba(136, 200, 255, 0.28);
+        box-shadow: 0 20px 46px rgba(3, 6, 12, 0.55);
+        color: #f0f6ff;
+    }
+
+    #structure-modal .card h3 {
+        margin: 0 0 16px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        font-size: 0.82rem;
+        color: rgba(204, 230, 255, 0.78);
+    }
+
+    #structure-modal .occupant-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 10px;
+    }
+
+    #structure-modal .occupant-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: rgba(10, 16, 24, 0.7);
+        border: 1px solid rgba(118, 178, 226, 0.24);
+        cursor: pointer;
+        transition: background 0.18s ease, border-color 0.18s ease;
+    }
+
+    #structure-modal .occupant-item:hover {
+        background: rgba(18, 26, 38, 0.82);
+        border-color: rgba(154, 210, 255, 0.45);
+    }
+
+    #structure-modal .occupant-item .name {
+        font-size: 0.96rem;
+        font-weight: 600;
+    }
+
+    #structure-modal .occupant-item .tag {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: rgba(208, 226, 248, 0.6);
+    }
+
+    #structure-modal .details {
+        margin-top: 16px;
+        font-size: 0.82rem;
+        line-height: 1.5;
+        color: rgba(214, 229, 245, 0.78);
+    }
+
+    #structure-modal .close-structure {
+        margin-top: 18px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: none;
+        background: rgba(12, 18, 26, 0.78);
+        color: #d7e7ff;
+        font-size: 0.86rem;
+        letter-spacing: 0.08em;
+        padding: 8px 18px;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: background 0.18s ease, transform 0.18s ease;
+    }
+
+    #structure-modal .close-structure:hover {
+        background: rgba(22, 32, 44, 0.88);
+        transform: translateY(-1px);
+    }
+</style>
 </head>
 <body>
-    <script type="module" src="./src/main.js"></script>
+<div id="ui-root">
+    <div id="resource-panel">
+        <h2>Town Stores</h2>
+        <ul>
+            <li data-resource="wood">
+                <span class="label">Wood</span>
+                <span class="value">0</span>
+            </li>
+            <li data-resource="stone">
+                <span class="label">Stone</span>
+                <span class="value">0</span>
+            </li>
+            <li data-resource="leaves">
+                <span class="label">Leaves</span>
+                <span class="value">0</span>
+            </li>
+        </ul>
+    </div>
+    <div id="time-panel">
+        <div class="time-header">
+            <span class="label">Current Time</span>
+            <span id="clock-display">08:00</span>
+        </div>
+        <div id="time-speed-buttons" role="group" aria-label="Time Controls">
+            <button type="button" data-speed="0.5">0.5×</button>
+            <button type="button" data-speed="1" class="active">1×</button>
+            <button type="button" data-speed="2">2×</button>
+            <button type="button" data-speed="4">4×</button>
+        </div>
+    </div>
+</div>
+
+<div id="villager-modal" class="hidden" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-labelledby="modal-title">
+        <button type="button" class="close-button" data-action="close-modal" aria-label="Close villager details">×</button>
+        <header>
+            <h2 id="modal-title">Field Orders</h2>
+            <p class="villager-name" data-field="name"></p>
+        </header>
+        <section class="modal-body">
+            <div class="modal-view modal-view-main active" data-view="main">
+                <div class="modal-field">
+                    <label for="villager-profession">Profession</label>
+                    <select id="villager-profession" data-field="profession-select"></select>
+                </div>
+                <button type="button" class="modal-field modal-field-button" data-action="open-relationships">
+                    <label>Social Wellbeing</label>
+                    <div class="meter"><span class="meter-fill" data-field="social-meter"></span></div>
+                    <div class="meter-value" data-field="social-meter-label">72%</div>
+                </button>
+                <p class="note" data-field="profession-description">
+                    Villagers without a chosen craft default to gathering nearby resources. Select a profession or review bonds to keep morale high.
+                </p>
+            </div>
+            <div class="modal-view modal-view-relationships" data-view="relationships">
+                <div class="modal-nav">
+                    <button type="button" class="back-button" data-action="close-relationships">← Back</button>
+                    <span class="label">Connections</span>
+                </div>
+                <ul class="relationship-list" data-field="relationships"></ul>
+            </div>
+        </section>
+        <div class="modal-footer">
+            <button type="button" data-action="close-modal">Close</button>
+        </div>
+    </div>
+</div>
+
+<div id="structure-modal" class="hidden" aria-hidden="true">
+    <div class="backdrop" data-action="close-structure"></div>
+    <div class="card">
+        <h3 data-field="structure-title">Homestead</h3>
+        <ul class="occupant-list" data-field="structure-occupants"></ul>
+        <div class="details" data-field="structure-details">No occupants currently reside here.</div>
+        <button type="button" class="close-structure" data-action="close-structure">Close</button>
+    </div>
+</div>
+
+<script type="module" src="./src/main.js"></script>
 </body>
 </html>
