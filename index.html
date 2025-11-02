@@ -385,6 +385,12 @@
         color: #fff8dc;
     }
 
+    .profession-icon-btn.fisherman {
+        background: rgba(65, 105, 225, 0.32);
+        border-color: rgba(65, 105, 225, 0.6);
+        color: #e0f2ff;
+    }
+
     .profession-icon-btn.active {
         box-shadow: 0 0 0 2px rgba(168, 219, 255, 0.25);
         transform: translateY(-1px);
@@ -700,6 +706,212 @@
         background: rgba(22, 32, 44, 0.88);
         transform: translateY(-1px);
     }
+
+    #crop-tooltip {
+        position: fixed;
+        inset: 0;
+        z-index: 12;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.18s ease;
+    }
+
+    #crop-tooltip.visible {
+        opacity: 1;
+    }
+
+    #crop-tooltip.hidden {
+        display: none;
+    }
+
+    #crop-tooltip .backdrop {
+        position: absolute;
+        inset: 0;
+        background: transparent;
+        pointer-events: auto;
+    }
+
+    #crop-tooltip .card {
+        position: absolute;
+        pointer-events: auto;
+        padding: 26px 26px 22px;
+        border-radius: 16px;
+        background: linear-gradient(170deg, rgba(24, 34, 48, 0.96) 0%, rgba(12, 18, 28, 0.94) 100%);
+        border: 1px solid rgba(138, 198, 250, 0.32);
+        box-shadow: 0 18px 40px rgba(3, 8, 16, 0.45);
+        color: #e9f3ff;
+        min-width: 240px;
+        max-width: clamp(260px, 28vw, 340px);
+    }
+
+    #crop-tooltip .card h3 {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 1.08rem;
+        letter-spacing: 0.04em;
+        color: #f5fbff;
+        padding-right: 36px;
+    }
+
+    #crop-tooltip .card .details {
+        margin-top: 12px;
+        font-size: 0.88rem;
+        color: rgba(218, 234, 255, 0.82);
+    }
+
+    #crop-tooltip .close-button {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        border: 1px solid rgba(244, 96, 96, 0.6);
+        background: radial-gradient(circle at 30% 30%, rgba(255, 148, 148, 0.95), rgba(180, 32, 32, 0.92));
+        color: #ffecec;
+        font-size: 16px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        pointer-events: auto;
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    #crop-tooltip .close-button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(180, 46, 46, 0.45);
+    }
+
+    #crop-tooltip .close-button:focus-visible {
+        outline: 2px solid rgba(255, 220, 220, 0.8);
+        outline-offset: 2px;
+    }
+
+    #storehouse-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 13;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+    }
+
+    #storehouse-modal.visible {
+        opacity: 1;
+    }
+
+    #storehouse-modal.hidden {
+        display: none;
+    }
+
+    #storehouse-modal .backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(6, 10, 16, 0.72);
+        backdrop-filter: blur(12px);
+        pointer-events: auto;
+    }
+
+    #storehouse-modal .card {
+        position: relative;
+        pointer-events: auto;
+        max-width: 420px;
+        margin: 8vh auto;
+        padding: 26px 30px 28px;
+        border-radius: 20px;
+        background: linear-gradient(175deg, rgba(24, 32, 48, 0.95) 0%, rgba(12, 18, 26, 0.94) 100%);
+        border: 1px solid rgba(148, 204, 255, 0.28);
+        color: #e9f3ff;
+        box-shadow: 0 24px 48px rgba(5, 10, 22, 0.5);
+        display: grid;
+        gap: 20px;
+    }
+
+    #storehouse-modal .card header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+    }
+
+    #storehouse-modal .card header h3 {
+        margin: 0;
+        font-size: 1.35rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #f7fbff;
+    }
+
+    #storehouse-modal .card header .subtitle {
+        font-size: 0.9rem;
+        color: rgba(205, 226, 245, 0.72);
+    }
+
+    #storehouse-modal .resource-grid {
+        display: grid;
+        gap: 14px;
+    }
+
+    #storehouse-modal .resource-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 16px;
+        border-radius: 12px;
+        background: rgba(16, 24, 34, 0.72);
+        border: 1px solid rgba(118, 184, 236, 0.22);
+    }
+
+    #storehouse-modal .resource-row .label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 0.92rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(214, 234, 255, 0.8);
+    }
+
+    #storehouse-modal .resource-row .value {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #f7fbff;
+    }
+
+    #storehouse-modal .total-line {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 14px 18px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, rgba(98, 166, 255, 0.2), rgba(48, 102, 210, 0.35));
+        border: 1px solid rgba(128, 192, 255, 0.35);
+        font-weight: 600;
+        font-size: 1.05rem;
+        color: #e9f4ff;
+    }
+
+    #storehouse-modal .close-button {
+        align-self: center;
+        padding: 10px 28px;
+        border-radius: 999px;
+        border: 1px solid rgba(146, 206, 255, 0.45);
+        background: rgba(12, 22, 34, 0.78);
+        color: #d8ecff;
+        font-size: 0.92rem;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+        transition: background 0.18s ease, transform 0.18s ease;
+    }
+
+    #storehouse-modal .close-button:hover {
+        background: rgba(16, 28, 44, 0.9);
+        transform: translateY(-1px);
+    }
 </style>
 </head>
 <body>
@@ -721,6 +933,14 @@
             </li>
             <li data-resource="grain">
                 <span class="label">Grain</span>
+                <span class="value">0</span>
+            </li>
+            <li data-resource="acorns">
+                <span class="label">Acorns</span>
+                <span class="value">0</span>
+            </li>
+            <li data-resource="fish">
+                <span class="label">Fish</span>
                 <span class="value">0</span>
             </li>
         </ul>
@@ -850,9 +1070,43 @@
     </div>
 </div>
 
+<div id="storehouse-modal" class="hidden" aria-hidden="true">
+    <div class="backdrop" data-action="close-storehouse"></div>
+    <div class="card">
+        <header>
+            <h3>Storehouse &amp; Yard</h3>
+            <span class="subtitle">Central repository for village resources</span>
+        </header>
+        <div class="resource-grid">
+            <div class="resource-row" data-storehouse="wood">
+                <span class="label">🌲 Wood</span>
+                <span class="value">0</span>
+            </div>
+            <div class="resource-row" data-storehouse="stone">
+                <span class="label">🪨 Stone</span>
+                <span class="value">0</span>
+            </div>
+            <div class="resource-row" data-storehouse="leaves">
+                <span class="label">🍃 Leaves</span>
+                <span class="value">0</span>
+            </div>
+            <div class="resource-row" data-storehouse="grain">
+                <span class="label">🌾 Grain</span>
+                <span class="value">0</span>
+            </div>
+        </div>
+        <div class="total-line">
+            <span>Total Stored</span>
+            <span data-storehouse="total">0</span>
+        </div>
+        <button type="button" class="close-button" data-action="close-storehouse">Close</button>
+    </div>
+</div>
+
 <div id="crop-tooltip" class="hidden" aria-hidden="true">
     <div class="backdrop" data-action="close-crop-tooltip"></div>
     <div class="card" style="max-width: 340px;">
+        <button type="button" class="close-button" data-action="close-crop-tooltip" aria-label="Close crop details">✕</button>
         <h3>🌾 <span data-field="crop-title">Wheat Plot</span></h3>
         <div class="details">
             <div style="display: grid; gap: 12px; margin-top: 12px;">
@@ -883,7 +1137,6 @@
                 </div>
             </div>
         </div>
-        <button type="button" class="close-structure" data-action="close-crop-tooltip" style="margin-top: 16px;">Close</button>
     </div>
 </div>
 
