@@ -34,11 +34,14 @@ class SceneManager {
             trees: [],
             bushes: [],
             stones: [],
+            crops: [],
+            seedPatches: [],
         };
         this.inventory = {
             wood: 0,
             stone: 0,
             leaves: 0,
+            grain: 0,
         };
         this.nextVillagerId = 1;
         this.namePools = {
@@ -56,6 +59,65 @@ class SceneManager {
                 id: 'laborer',
                 name: 'Laborer',
                 description: 'Stays near town ready to help with construction and future crafts.',
+            },
+            {
+                id: 'forester',
+                name: 'Forester',
+                description: 'Replants felled groves and tends the woodland so lumber stores stay healthy.',
+            },
+            {
+                id: 'farmer',
+                name: 'Farmer',
+                description: 'Plants and harvests wheat crops to feed the village.',
+            },
+        ];
+
+        this.professionActions = {
+            laborer: {
+                icon: '🔨',
+                mode: 'build',
+                buttonClass: 'laborer',
+                menuTitle: 'Build Menu',
+            },
+            forester: {
+                icon: '🌲',
+                mode: 'plant',
+                buttonClass: 'forester',
+                menuTitle: 'Forestry Plantings',
+            },
+            farmer: {
+                icon: '🌾',
+                mode: 'farm',
+                buttonClass: 'farmer',
+                menuTitle: 'Farming Actions',
+            },
+        };
+
+        this.foresterPlantables = [
+            {
+                id: 'oak-sapling',
+                name: 'Oak Sapling',
+                description: 'Replant a hearty oak that will mature into a dependable wood source.',
+                icon: '🌱',
+                scale: 0.9,
+                capacity: 64,
+                minSpacing: 4.2,
+                growthDays: { min: 1, max: 3 },
+            },
+        ];
+
+        this.farmerPlantables = [
+            {
+                id: 'wheat-crop',
+                name: 'Wheat Plot',
+                description: 'Plant wheat seeds that will grow into golden grain for harvest.',
+                icon: '🌾',
+                scale: 0.5,
+                capacity: 16,
+                minSpacing: 1.8,
+                growthDays: { min: 0.75, max: 1.5 },
+                requiresSeeds: true,
+                seedCost: 1,
             },
         ];
 
@@ -99,12 +161,37 @@ class SceneManager {
         this.structureModalElement = null;
         this.structureModalVisible = false;
         this.activeStructureContext = null;
+        this.cropTooltipVisible = false;
+        this.selectedCrop = null;
+        this.actionHintElement = null;
 
         this.raycaster = new THREE.Raycaster();
         this.pointer = new THREE.Vector2();
         this.selectedVillager = null;
         this.modalVisible = false;
         this.modalAnchor = null;
+        this.activeProfessionActionMode = null;
+        this.pendingPlanting = null;
+        this.professionInstructionOverride = null;
+        this.groundMesh = null;
+        this.currentActionHint = '';
+        this.plantingPreview = null;
+        this.pointerHoverPoint = null;
+        this.treeGrowthAccumulator = 0;
+        this.activePlantingHint = null;
+        this.modalGenderIcon = null;
+        this.modalEnergyMeterFill = null;
+        this.modalEnergyLabel = null;
+        this.modalHungerMeterFill = null;
+        this.modalHungerLabel = null;
+        this.modalVitalityContainer = null;
+        this.modalIntelligenceLabel = null;
+        this.modalStrengthLabel = null;
+        this.simulationPaused = false;
+        this.pausedBecausePlacement = false;
+        this.modalRestoreVillagerId = null;
+        this.modalRestoreAnchor = null;
+        this.modalRestoreView = null;
 
         this.initScene();
         this.setupUI();
@@ -135,6 +222,7 @@ class SceneManager {
         const ground = new THREE.Mesh(groundGeometry, groundMaterial);
         ground.rotation.x = -Math.PI / 2;
         this.scene.add(ground);
+        this.groundMesh = ground;
 
         // Village center: detailed hall and plaza with a clear buffer for decorations
         const { group: villageCenterGroup, obstacles: villageCenterObstacles } = this.createVillageCenter();
@@ -146,6 +234,7 @@ class SceneManager {
         this.addBushes(15); // Procedural bushes
         this.addPonds(3); // Procedural ponds
         this.addStoneClusters(12); // Early resource nodes
+        this.addWheatSeedPatches(8); // Wild wheat seed patches for farmers
 
         // Spawn villagers around town center
         this.spawnVillagers(10);
@@ -170,6 +259,15 @@ class SceneManager {
 
         this.modalElement = document.getElementById('villager-modal');
         this.structureModalElement = document.getElementById('structure-modal');
+        this.cropTooltipElement = document.getElementById('crop-tooltip');
+        this.cropTooltipTitle = this.cropTooltipElement?.querySelector('[data-field="crop-title"]');
+        this.cropTooltipStatus = this.cropTooltipElement?.querySelector('[data-field="crop-status"]');
+        this.cropTooltipGrowthPercent = this.cropTooltipElement?.querySelector('[data-field="crop-growth-percent"]');
+        this.cropTooltipGrowthBar = this.cropTooltipElement?.querySelector('[data-field="crop-growth-bar"]');
+        this.cropTooltipPlanter = this.cropTooltipElement?.querySelector('[data-field="crop-planter"]');
+        this.cropTooltipTimeRemaining = this.cropTooltipElement?.querySelector('[data-field="crop-time-remaining"]');
+        this.cropTooltipYield = this.cropTooltipElement?.querySelector('[data-field="crop-yield"]');
+        this.actionHintElement = document.getElementById('action-hint');
         if (this.modalElement) {
             this.modalNameField = this.modalElement.querySelector('[data-field="name"]');
             this.modalProfessionSelect = this.modalElement.querySelector('[data-field="profession-select"]');
@@ -179,12 +277,24 @@ class SceneManager {
             this.modalRelationshipsContainer = this.modalElement.querySelector('[data-field="relationships"]');
             this.modalMainView = this.modalElement.querySelector('[data-view="main"]');
             this.modalRelationshipsView = this.modalElement.querySelector('[data-view="relationships"]');
-            this.modalBuildMenuView = this.modalElement.querySelector('[data-view="build-menu"]');
-            this.modalBuildListContainer = this.modalElement.querySelector('[data-field="build-list"]');
+            this.modalActionMenuView = this.modalElement.querySelector('[data-view="action-menu"]');
+            this.modalInventoryView = this.modalElement.querySelector('[data-view="inventory"]');
+            this.modalActionListContainer = this.modalElement.querySelector('[data-field="action-list"]');
+            this.modalActionMenuTitle = this.modalElement.querySelector('[data-field="action-menu-title"]');
+            this.modalGenderIcon = this.modalElement.querySelector('[data-field="gender-icon"]');
+            this.modalEnergyMeterFill = this.modalElement.querySelector('[data-field="energy-meter"]');
+            this.modalEnergyLabel = this.modalElement.querySelector('[data-field="energy-label"]');
+            this.modalHungerMeterFill = this.modalElement.querySelector('[data-field="hunger-meter"]');
+            this.modalHungerLabel = this.modalElement.querySelector('[data-field="hunger-label"]');
+            this.modalVitalityContainer = this.modalElement.querySelector('[data-field="vitality"]');
+            this.modalIntelligenceLabel = this.modalElement.querySelector('[data-field="intelligence-label"]');
+            this.modalStrengthLabel = this.modalElement.querySelector('[data-field="strength-label"]');
             this.modalOpenRelationshipsButton = this.modalElement.querySelector('[data-action="open-relationships"]');
             this.modalCloseRelationshipsButton = this.modalElement.querySelector('[data-action="close-relationships"]');
-            this.modalOpenBuildMenuButton = this.modalElement.querySelector('[data-action="open-build-menu"]');
-            this.modalCloseBuildMenuButton = this.modalElement.querySelector('[data-action="close-build-menu"]');
+            this.modalCloseActionMenuButton = this.modalElement.querySelector('[data-action="close-action-menu"]');
+            this.modalOpenInventoryButton = this.modalElement.querySelector('[data-action="open-inventory"]');
+            this.modalCloseInventoryButton = this.modalElement.querySelector('[data-action="close-inventory"]');
+            this.modalInventoryGrid = this.modalElement.querySelector('[data-field="inventory-grid"]');
             this.professionIconButton = document.getElementById('profession-icon-button');
 
             const closeElements = this.modalElement.querySelectorAll('[data-action="close-modal"]');
@@ -196,6 +306,7 @@ class SceneManager {
                     if (!this.selectedVillager) return;
                     const value = event.target.value || 'gatherer';
                     this.selectedVillager.setProfession(value);
+                    this.cancelPendingPlanting();
                     this.updateVillagerModal(this.selectedVillager);
                 });
             }
@@ -208,13 +319,35 @@ class SceneManager {
                 this.showVillagerModalView('main');
             });
 
-            this.modalOpenBuildMenuButton?.addEventListener('click', () => {
-                this.showVillagerModalView('build-menu');
-                this.populateBuildMenu(this.selectedVillager);
+            this.modalCloseActionMenuButton?.addEventListener('click', () => {
+                this.showVillagerModalView('main');
+                this.activeProfessionActionMode = null;
+                if (this.selectedVillager) {
+                    this.updateVillagerModal(this.selectedVillager);
+                }
             });
 
-            this.modalCloseBuildMenuButton?.addEventListener('click', () => {
+            this.modalOpenInventoryButton?.addEventListener('click', () => {
+                this.showVillagerModalView('inventory');
+                if (this.selectedVillager) {
+                    this.populateInventoryView(this.selectedVillager);
+                }
+            });
+
+            this.modalCloseInventoryButton?.addEventListener('click', () => {
                 this.showVillagerModalView('main');
+            });
+
+            this.professionIconButton?.addEventListener('click', () => {
+                if (!this.selectedVillager) return;
+                const config = this.getProfessionActionConfig(this.selectedVillager.profession);
+                if (!config) return;
+                this.activeProfessionActionMode = config.mode;
+                if (this.modalActionMenuTitle) {
+                    this.modalActionMenuTitle.textContent = config.menuTitle;
+                }
+                this.showVillagerModalView('action-menu');
+                this.populateActionMenu(this.selectedVillager, config.mode);
             });
         }
 
@@ -238,13 +371,20 @@ class SceneManager {
             const closeButtons = this.structureModalElement.querySelectorAll('[data-action="close-structure"]');
             closeButtons.forEach(button => button.addEventListener('click', () => this.hideStructureModal()));
         }
+
+        if (this.cropTooltipElement) {
+            const closeButtons = this.cropTooltipElement.querySelectorAll('[data-action="close-crop-tooltip"]');
+            closeButtons.forEach(button => button.addEventListener('click', () => this.hideCropTooltip()));
+        }
     }
 
     setupInteraction() {
         this.handlePointerDown = this.handlePointerDown.bind(this);
+        this.handlePointerMove = this.handlePointerMove.bind(this);
         this.handleKeyDown = this.handleKeyDown.bind(this);
 
         this.renderer.domElement.addEventListener('pointerdown', this.handlePointerDown);
+        this.renderer.domElement.addEventListener('pointermove', this.handlePointerMove);
         window.addEventListener('keydown', this.handleKeyDown);
     }
 
@@ -257,17 +397,31 @@ class SceneManager {
             return;
         }
 
-        const rect = this.renderer.domElement.getBoundingClientRect();
-        this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-        this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        this.updatePointerFromEvent(event);
 
         this.raycaster.setFromCamera(this.pointer, this.camera);
+
+        if (this.pendingPlanting) {
+            const groundPoint = this.getGroundIntersectionPoint();
+            if (groundPoint) {
+                this.pointerHoverPoint = groundPoint.clone();
+                this.handlePlantingSelection(groundPoint);
+            } else {
+                this.pointerHoverPoint = null;
+                this.showActionHint('Aim for open ground to plant the sapling.');
+            }
+            return;
+        }
+
         const villageMeshes = this.villagers.map(villager => villager.mesh);
         const structureMeshes = this.homes
             .filter(home => home?.structure)
             .map(home => home.structure);
+        const cropMeshes = this.resourceNodes.crops
+            .filter(crop => crop?.object)
+            .map(crop => crop.object);
 
-        const intersections = this.raycaster.intersectObjects([...villageMeshes, ...structureMeshes], true);
+        const intersections = this.raycaster.intersectObjects([...villageMeshes, ...structureMeshes, ...cropMeshes], true);
 
         if (intersections.length === 0) {
             if (this.modalVisible) {
@@ -276,11 +430,14 @@ class SceneManager {
             if (this.structureModalVisible) {
                 this.hideStructureModal();
             }
+            if (this.cropTooltipVisible) {
+                this.hideCropTooltip();
+            }
             return;
         }
 
         let intersect = intersections[0].object;
-        while (intersect && !intersect.userData.villager && !intersect.userData.structureId) {
+        while (intersect && !intersect.userData.villager && !intersect.userData.structureId && !intersect.userData.cropNodeId) {
             intersect = intersect.parent;
         }
 
@@ -288,6 +445,9 @@ class SceneManager {
             this.openVillagerModal(intersect.userData.villager, event);
             if (this.structureModalVisible) {
                 this.hideStructureModal();
+            }
+            if (this.cropTooltipVisible) {
+                this.hideCropTooltip();
             }
         } else if (intersect?.userData?.structureId) {
             const home = this.getHomeById(intersect.userData.structureId);
@@ -297,16 +457,65 @@ class SceneManager {
             if (this.modalVisible) {
                 this.hideVillagerModal();
             }
+            if (this.cropTooltipVisible) {
+                this.hideCropTooltip();
+            }
+        } else if (intersect?.userData?.cropNodeId) {
+            const cropId = intersect.userData.cropNodeId;
+            const crop = this.resourceNodes.crops.find(c => c.id === cropId);
+            if (crop) {
+                this.showCropInfo(crop);
+            }
+            if (this.modalVisible) {
+                this.hideVillagerModal();
+            }
+            if (this.structureModalVisible) {
+                this.hideStructureModal();
+            }
         }
     }
 
+    handlePointerMove(event) {
+        if (event.target !== this.renderer.domElement) {
+            return;
+        }
+        this.updatePointerFromEvent(event);
+        this.raycaster.setFromCamera(this.pointer, this.camera);
+        if (!this.pendingPlanting) {
+            return;
+        }
+        const groundPoint = this.getGroundIntersectionPoint();
+        if (!groundPoint) {
+            this.updatePlantingPreview(null);
+            this.pointerHoverPoint = null;
+            return;
+        }
+        this.pointerHoverPoint = groundPoint.clone();
+        this.updatePlantingPreview(groundPoint);
+    }
+
+    updatePointerFromEvent(event) {
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
     handleKeyDown(event) {
-        if (event.key === 'Escape' && this.modalVisible) {
-            this.hideVillagerModal();
+        if (event.key === 'Escape') {
+            if (this.pendingPlanting) {
+                this.cancelPendingPlanting();
+                return;
+            }
+            if (this.modalVisible) {
+                this.hideVillagerModal();
+            }
         }
     }
 
     openVillagerModal(villager, pointerEvent) {
+        if (this.pendingPlanting && this.pendingPlanting.villagerId !== villager.id) {
+            this.cancelPendingPlanting({ silent: true, reopenModal: false });
+        }
         this.selectedVillager = villager;
         this.modalVisible = true;
         if (!this.modalElement) return;
@@ -340,6 +549,7 @@ class SceneManager {
         }
         this.selectedVillager = null;
         this.modalAnchor = null;
+        this.activeProfessionActionMode = null;
         this.showVillagerModalView('main');
     }
 
@@ -349,6 +559,16 @@ class SceneManager {
         if (this.modalNameField) {
             this.modalNameField.textContent = villager.name;
         }
+        if (this.modalGenderIcon) {
+            const gender = villager.gender ?? 'unknown';
+            const icon = gender === 'female' ? '♀' : gender === 'male' ? '♂' : '⚧';
+            const label = gender === 'female' ? 'Female' : gender === 'male' ? 'Male' : 'Unspecified';
+            this.modalGenderIcon.textContent = icon;
+            this.modalGenderIcon.classList.toggle('male', gender === 'male');
+            this.modalGenderIcon.classList.toggle('female', gender === 'female');
+            this.modalGenderIcon.setAttribute('aria-label', label);
+            this.modalGenderIcon.setAttribute('title', label);
+        }
         if (this.modalProfessionSelect) {
             const current = villager.profession ?? 'gatherer';
             if (this.modalProfessionSelect.value !== current) {
@@ -356,19 +576,38 @@ class SceneManager {
             }
         }
 
-        // Show/hide build menu button for laborers
+        // Configure profession-specific action button
         if (this.professionIconButton) {
-            const isLaborer = villager.profession === 'laborer';
-            if (isLaborer) {
+            const config = this.getProfessionActionConfig(villager.profession ?? 'gatherer');
+            this.professionIconButton.classList.remove('laborer', 'forester', 'active');
+            this.professionIconButton.removeAttribute('data-mode');
+            if (config) {
                 this.professionIconButton.classList.remove('hidden');
+                this.professionIconButton.textContent = config.icon;
+                this.professionIconButton.title = config.menuTitle;
+                this.professionIconButton.setAttribute('aria-label', config.menuTitle);
+                if (config.buttonClass) {
+                    this.professionIconButton.classList.add(config.buttonClass);
+                }
+                this.professionIconButton.dataset.mode = config.mode;
+                if (config.mode === 'plant' && this.pendingPlanting && this.pendingPlanting.villagerId === villager.id) {
+                    this.professionIconButton.classList.add('active');
+                }
             } else {
                 this.professionIconButton.classList.add('hidden');
+                this.professionIconButton.textContent = '';
+                this.professionIconButton.title = '';
+                this.professionIconButton.removeAttribute('aria-label');
             }
         }
 
         if (this.modalProfessionDescription) {
             const def = this.getProfessionDefinition(villager.profession ?? 'gatherer');
-            this.modalProfessionDescription.textContent = def?.description || 'Villagers without a chosen craft default to gathering nearby resources.';
+            let descriptionText = def?.description || 'Villagers without a chosen craft default to gathering nearby resources.';
+            if (this.professionInstructionOverride && this.professionInstructionOverride.villagerId === villager.id) {
+                descriptionText = this.professionInstructionOverride.message;
+            }
+            this.modalProfessionDescription.textContent = descriptionText;
         }
 
         if (this.modalSocialMeterFill) {
@@ -418,6 +657,48 @@ class SceneManager {
             }
         }
 
+        this.updateMeterStat(this.modalEnergyMeterFill, this.modalEnergyLabel, villager.energy, {
+            warnBelow: 45,
+            alertBelow: 20,
+        });
+        if (this.modalEnergyLabel) {
+            this.modalEnergyLabel.setAttribute('title', `${Math.round(villager.energy)}%`);
+        }
+
+        const hungerDescriptor = this.getHungerDescriptor(villager.hunger);
+        this.updateMeterStat(this.modalHungerMeterFill, this.modalHungerLabel, villager.hunger, {
+            warnAbove: 65,
+            alertAbove: 85,
+            formatter: () => hungerDescriptor,
+        });
+        if (this.modalHungerLabel) {
+            this.modalHungerLabel.setAttribute('title', `${Math.round(villager.hunger)}%`);
+        }
+
+        if (this.modalVitalityContainer) {
+            const max = Math.max(1, villager.maxVitality ?? 3);
+            const hearts = Math.max(0, Math.min(max, Math.floor(villager.vitality ?? 0)));
+            const empty = Math.max(0, max - hearts);
+            this.modalVitalityContainer.textContent = '❤️'.repeat(hearts) + '🤍'.repeat(empty);
+            this.modalVitalityContainer.setAttribute('title', `${hearts}/${max} vitality`);
+        }
+
+        if (this.modalIntelligenceLabel) {
+            const value = Math.round(villager.intelligence ?? 0);
+            this.modalIntelligenceLabel.textContent = value.toString();
+            this.modalIntelligenceLabel.classList.toggle('alert', value <= 25);
+            this.modalIntelligenceLabel.classList.toggle('warn', value > 25 && value <= 40);
+            this.modalIntelligenceLabel.setAttribute('title', `${value}`);
+        }
+
+        if (this.modalStrengthLabel) {
+            const value = Math.round(villager.strength ?? 0);
+            this.modalStrengthLabel.textContent = value.toString();
+            this.modalStrengthLabel.classList.toggle('alert', value <= 25);
+            this.modalStrengthLabel.classList.toggle('warn', value > 25 && value <= 40);
+            this.modalStrengthLabel.setAttribute('title', `${value}`);
+        }
+
         this.applyTooltipPosition();
     }
 
@@ -450,17 +731,115 @@ class SceneManager {
         });
     }
 
+    showActionHint(message) {
+        if (!this.actionHintElement) return;
+        if (this.currentActionHint === message) return;
+        this.currentActionHint = message;
+        this.actionHintElement.textContent = message;
+        this.actionHintElement.classList.add('visible');
+    }
+
+    hideActionHint() {
+        if (!this.actionHintElement) return;
+        if (!this.currentActionHint) return;
+        this.currentActionHint = '';
+        this.actionHintElement.textContent = '';
+        this.actionHintElement.classList.remove('visible');
+    }
+
     showVillagerModalView(view = 'main') {
-        if (!this.modalMainView || !this.modalRelationshipsView || !this.modalBuildMenuView) return;
+        if (!this.modalMainView || !this.modalRelationshipsView || !this.modalActionMenuView || !this.modalInventoryView) return;
         this.modalMainView.classList.toggle('active', view === 'main');
         this.modalRelationshipsView.classList.toggle('active', view === 'relationships');
-        this.modalBuildMenuView.classList.toggle('active', view === 'build-menu');
+        this.modalActionMenuView.classList.toggle('active', view === 'action-menu');
+        this.modalInventoryView.classList.toggle('active', view === 'inventory');
         this.activeModalView = view;
     }
 
+    populateInventoryView(villager) {
+        if (!this.modalInventoryGrid || !villager) return;
+        this.modalInventoryGrid.innerHTML = '';
+
+        const inventoryItems = [
+            {
+                id: 'wheatSeeds',
+                name: 'Wheat Seeds',
+                icon: '🌾',
+                description: 'Seeds for planting wheat crops',
+                count: villager.inventory.wheatSeeds || 0
+            }
+        ];
+
+        const hasItems = inventoryItems.some(item => item.count > 0);
+
+        if (!hasItems) {
+            const empty = document.createElement('div');
+            empty.style.textAlign = 'center';
+            empty.style.color = 'rgba(214, 229, 245, 0.6)';
+            empty.style.padding = '20px';
+            empty.textContent = 'No items in inventory';
+            this.modalInventoryGrid.appendChild(empty);
+            return;
+        }
+
+        inventoryItems.forEach(item => {
+            if (item.count > 0) {
+                const itemElement = document.createElement('div');
+                itemElement.className = 'relationship-item';
+                itemElement.style.cursor = 'default';
+                itemElement.style.display = 'flex';
+                itemElement.style.justifyContent = 'space-between';
+                itemElement.style.alignItems = 'center';
+
+                const info = document.createElement('div');
+                info.className = 'info';
+
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'name';
+                nameDiv.textContent = `${item.icon} ${item.name}`;
+
+                const descDiv = document.createElement('div');
+                descDiv.className = 'status';
+                descDiv.textContent = item.description;
+
+                info.appendChild(nameDiv);
+                info.appendChild(descDiv);
+
+                const countDiv = document.createElement('div');
+                countDiv.className = 'score';
+                countDiv.textContent = `×${item.count}`;
+                countDiv.style.fontSize = '1.1rem';
+                countDiv.style.fontWeight = '600';
+
+                itemElement.appendChild(info);
+                itemElement.appendChild(countDiv);
+                this.modalInventoryGrid.appendChild(itemElement);
+            }
+        });
+    }
+
+    populateActionMenu(villager, mode) {
+        if (mode === 'build') {
+            this.populateBuildMenu(villager);
+            return;
+        }
+        if (mode === 'plant' || mode === 'farm') {
+            this.populatePlantingMenu(villager);
+            return;
+        }
+
+        if (!this.modalActionListContainer) return;
+        this.modalActionListContainer.innerHTML = '';
+        const empty = document.createElement('li');
+        empty.className = 'relationship-item';
+        empty.style.cursor = 'default';
+        empty.textContent = 'No actions available for this profession yet.';
+        this.modalActionListContainer.appendChild(empty);
+    }
+
     populateBuildMenu(villager) {
-        if (!this.modalBuildListContainer) return;
-        this.modalBuildListContainer.innerHTML = '';
+        if (!this.modalActionListContainer) return;
+        this.modalActionListContainer.innerHTML = '';
 
         // Define buildable structures
         const buildables = [];
@@ -482,7 +861,7 @@ class SceneManager {
             empty.className = 'relationship-item';
             empty.style.cursor = 'default';
             empty.textContent = 'All structures have been built.';
-            this.modalBuildListContainer.appendChild(empty);
+            this.modalActionListContainer.appendChild(empty);
             return;
         }
 
@@ -522,8 +901,506 @@ class SceneManager {
                 });
             }
 
-            this.modalBuildListContainer.appendChild(item);
+            this.modalActionListContainer.appendChild(item);
         });
+    }
+
+    populatePlantingMenu(villager) {
+        if (!this.modalActionListContainer) return;
+        this.modalActionListContainer.innerHTML = '';
+
+        const options = this.getPlantablesForProfession(villager?.profession);
+        if (!options || options.length === 0) {
+            const empty = document.createElement('li');
+            empty.className = 'relationship-item';
+            empty.style.cursor = 'default';
+            empty.textContent = 'No plantings are available yet.';
+            this.modalActionListContainer.appendChild(empty);
+            return;
+        }
+
+        options.forEach(plantable => {
+            const item = document.createElement('li');
+            item.className = 'relationship-item';
+            const hasCorrectProfession = !!villager && (villager.profession === 'forester' || villager.profession === 'farmer');
+
+            // Check seed requirements for wheat
+            let hasRequiredSeeds = true;
+            let seedInfo = '';
+            if (plantable.requiresSeeds && villager) {
+                const seedCount = villager.inventory.wheatSeeds || 0;
+                const seedCost = plantable.seedCost || 1;
+                hasRequiredSeeds = seedCount >= seedCost;
+                seedInfo = hasRequiredSeeds
+                    ? ` (Seeds: ${seedCount})`
+                    : ` (Need ${seedCost} seed${seedCost > 1 ? 's' : ''}, have ${seedCount})`;
+            }
+
+            const canAssign = hasCorrectProfession && hasRequiredSeeds;
+            item.style.cursor = canAssign ? 'pointer' : 'default';
+            item.style.opacity = canAssign ? '1' : '0.58';
+
+            const info = document.createElement('div');
+            info.className = 'info';
+
+            const name = document.createElement('div');
+            name.className = 'name';
+            name.textContent = `${plantable.icon} ${plantable.name}${seedInfo}`;
+
+            const status = document.createElement('div');
+            status.className = 'status';
+            status.textContent = plantable.description;
+            status.style.fontSize = '0.85em';
+
+            info.appendChild(name);
+            info.appendChild(status);
+
+            const score = document.createElement('div');
+            score.className = 'score';
+            score.textContent = canAssign ? '✓' : '✗';
+            score.style.color = canAssign ? '#4ade80' : '#f87171';
+
+            item.appendChild(info);
+            item.appendChild(score);
+
+            if (canAssign) {
+                item.addEventListener('click', () => {
+                    this.beginPlanting(villager, plantable);
+                });
+            }
+
+            this.modalActionListContainer.appendChild(item);
+        });
+    }
+
+    beginPlanting(villager, plantable) {
+        if (!villager || (villager.profession !== 'forester' && villager.profession !== 'farmer')) {
+            return;
+        }
+        if (!plantable) {
+            console.warn('No planting option provided for planting action.');
+            return;
+        }
+
+        // Check seed requirements
+        if (plantable.requiresSeeds) {
+            const seedCount = villager.inventory.wheatSeeds || 0;
+            const seedCost = plantable.seedCost || 1;
+            if (seedCount < seedCost) {
+                this.showActionHint(`Not enough seeds! Gather wheat seeds from wild patches first.`);
+                return;
+            }
+        }
+        const previousView = this.activeModalView || 'main';
+        this.prepareVillagerForManualAction(villager);
+        this.cancelPendingPlanting({ silent: true, reopenModal: false });
+        this.createPlantingPreview(plantable);
+
+        this.pendingPlanting = {
+            villagerId: villager.id,
+            plantableId: plantable.id,
+        };
+        this.professionInstructionOverride = {
+            villagerId: villager.id,
+            message: `Select a planting spot for the ${plantable.name}.`,
+        };
+        this.activeProfessionActionMode = null;
+        this.pauseSimulationForPlacement(villager, previousView);
+        const instruction = `Click on open ground to plant the ${plantable.name}.`;
+        this.activePlantingHint = instruction;
+        this.showActionHint(instruction);
+    }
+
+    createPlantingPreview(plantable) {
+        this.disposePlantingPreview();
+        if (!plantable) return;
+
+        const radius = Math.max(plantable?.minSpacing ?? 4, 2.6);
+        const group = new THREE.Group();
+
+        const highlightGeometry = new THREE.CircleGeometry(radius, 48);
+        const highlightMaterial = new THREE.MeshBasicMaterial({
+            color: 0x4ade80,
+            opacity: 0.24,
+            transparent: true,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+        });
+        const highlight = new THREE.Mesh(highlightGeometry, highlightMaterial);
+        highlight.rotation.x = -Math.PI / 2;
+        highlight.position.y = 0.02;
+        group.add(highlight);
+
+        const ringGeometry = new THREE.RingGeometry(Math.max(radius - 0.35, radius * 0.7), radius, 48);
+        const ringMaterial = new THREE.MeshBasicMaterial({
+            color: 0xd7fbe8,
+            opacity: 0.52,
+            transparent: true,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+        });
+        const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.y = 0.025;
+        group.add(ring);
+
+        // Use appropriate preview based on plantable type
+        const isCrop = plantable.id === 'wheat-crop';
+        const previewVisual = isCrop
+            ? this.buildWheatPlotPreview(plantable.scale ?? 0.5, { preview: true })
+            : this.buildSaplingVisual(plantable.scale ?? 0.9, { preview: true });
+        group.add(previewVisual);
+
+        group.visible = false;
+        this.scene.add(group);
+
+        this.plantingPreview = {
+            plantable,
+            group,
+            highlight,
+            ring,
+            sapling: previewVisual,
+            valid: false,
+            lastValidation: null,
+        };
+
+        if (this.pointerHoverPoint) {
+            this.updatePlantingPreview(this.pointerHoverPoint.clone());
+        }
+    }
+
+    updatePlantingPreview(position) {
+        if (!this.plantingPreview) return null;
+        const preview = this.plantingPreview;
+
+        if (!position) {
+            preview.group.visible = false;
+            preview.lastValidation = null;
+            preview.valid = false;
+            return null;
+        }
+
+        preview.group.visible = true;
+        preview.group.position.set(position.x, 0, position.z);
+
+        const validation = this.validatePlantingLocation(position, preview.plantable);
+        preview.lastValidation = validation;
+        preview.valid = validation.valid;
+
+        const highlightColor = validation.valid ? 0x4ade80 : 0xf97316;
+        const highlightOpacity = validation.valid ? 0.26 : 0.34;
+        preview.highlight.material.color.setHex(highlightColor);
+        preview.highlight.material.opacity = highlightOpacity;
+        preview.highlight.material.needsUpdate = true;
+
+        if (preview.ring?.material) {
+            preview.ring.material.color.setHex(validation.valid ? 0xdfffee : 0xf4b27d);
+            preview.ring.material.opacity = validation.valid ? 0.55 : 0.75;
+            preview.ring.material.needsUpdate = true;
+        }
+
+        const targetOpacity = validation.valid ? 0.82 : 0.42;
+        preview.sapling.traverse(child => {
+            if (child.isMesh && child.material) {
+                child.material.opacity = targetOpacity;
+                child.material.needsUpdate = true;
+            }
+        });
+
+        if (validation.valid && this.pendingPlanting && this.activePlantingHint && this.currentActionHint !== this.activePlantingHint) {
+            this.showActionHint(this.activePlantingHint);
+        }
+
+        return validation;
+    }
+
+    disposePlantingPreview() {
+        if (!this.plantingPreview) return;
+        const { group } = this.plantingPreview;
+        if (group) {
+            this.scene.remove(group);
+            group.traverse(child => {
+                if (child.isMesh) {
+                    child.geometry?.dispose?.();
+                    child.material?.dispose?.();
+                }
+            });
+        }
+        this.plantingPreview = null;
+        this.pointerHoverPoint = null;
+    }
+
+    handlePlantingSelection(point) {
+        if (!this.pendingPlanting) return;
+        const pending = this.pendingPlanting;
+        const villager = this.getVillagerById(pending.villagerId);
+        const plantable = this.getPlantableDefinition(pending.plantableId);
+        if (!villager || !plantable) {
+            this.cancelPendingPlanting({ silent: true });
+            return;
+        }
+
+        const location = point.clone();
+        location.y = 0;
+
+        let validation = this.updatePlantingPreview(location);
+        if (!validation) {
+            validation = this.validatePlantingLocation(location, plantable);
+        }
+        if (!validation.valid) {
+            if (validation.message) {
+                this.showActionHint(validation.message);
+            }
+            return;
+        }
+
+        this.prepareVillagerForManualAction(villager);
+        this.startTreePlantingTask(villager, plantable, location);
+    }
+
+    getGroundIntersectionPoint() {
+        if (!this.groundMesh) return null;
+        const hits = this.raycaster.intersectObject(this.groundMesh, false);
+        if (!hits || hits.length === 0) {
+            return null;
+        }
+        const point = hits[0].point.clone();
+        point.y = 0;
+        return point;
+    }
+
+    validatePlantingLocation(position, plantable) {
+        const minSpacing = plantable?.minSpacing ?? 4;
+        const marginFromCenter = this.townCenterRadius + 1.8;
+        const maxRadius = 48;
+
+        if (position.length() < marginFromCenter) {
+            return { valid: false, message: 'Keep new plantings outside the village square.' };
+        }
+
+        if (position.length() > maxRadius) {
+            return { valid: false, message: 'That location is too far from town.' };
+        }
+
+        const nearbyTrees = this.resourceNodes.trees.filter(node => node && !node.depleted);
+        for (const node of nearbyTrees) {
+            const nodePosition = node.position ?? node.object?.position;
+            if (!nodePosition) continue;
+            if (nodePosition.distanceTo(position) < minSpacing) {
+                return { valid: false, message: 'Give nearby trees more space to grow.' };
+            }
+        }
+
+        const obstacleDistance = Math.max(3, minSpacing - 1);
+        const shrubDistance = Math.max(2.6, minSpacing - 1.4);
+
+        for (const bush of this.resourceNodes.bushes) {
+            if (!bush || bush.depleted) continue;
+            if (bush.position.distanceTo(position) < shrubDistance) {
+                return { valid: false, message: 'Clear some space away from shrubs first.' };
+            }
+        }
+
+        for (const stone of this.resourceNodes.stones) {
+            if (!stone || stone.depleted) continue;
+            if (stone.position.distanceTo(position) < obstacleDistance) {
+                return { valid: false, message: 'Large stones are in the way there.' };
+            }
+        }
+
+        if (this.storehouse?.location && this.storehouse.location.distanceTo(position) < 7.5) {
+            return { valid: false, message: 'Leave room around the storehouse yard.' };
+        }
+
+        if (this.bonfire?.location && this.bonfire.location.distanceTo(position) < 4.5) {
+            return { valid: false, message: 'Keep trees clear of the bonfire.' };
+        }
+
+        for (const home of this.homes) {
+            if (!home || !home.location) continue;
+            if (home.location.distanceTo(position) < 5.2) {
+                return { valid: false, message: 'Residents need breathing room around their homes.' };
+            }
+        }
+
+        return { valid: true };
+    }
+
+    pauseSimulationForPlacement(villager, restoreView = this.activeModalView || 'main') {
+        if (this.pausedBecausePlacement) {
+            this.modalRestoreVillagerId = villager?.id ?? this.modalRestoreVillagerId;
+            if (!this.modalRestoreView) {
+                this.modalRestoreView = restoreView || 'main';
+            }
+            return;
+        }
+
+        this.pausedBecausePlacement = true;
+        this.simulationPaused = true;
+        this.modalRestoreVillagerId = villager?.id ?? null;
+        this.modalRestoreAnchor = this.modalAnchor ? { ...this.modalAnchor } : null;
+        this.modalRestoreView = restoreView || 'main';
+
+        if (this.modalVisible) {
+            this.hideVillagerModal();
+        }
+    }
+
+    resumeSimulationFromPlacement({ reopenModal = true } = {}) {
+        if (!this.pausedBecausePlacement) {
+            return;
+        }
+
+        this.pausedBecausePlacement = false;
+        this.simulationPaused = false;
+
+        const villagerId = this.modalRestoreVillagerId;
+        const anchor = this.modalRestoreAnchor;
+        const restoreView = this.modalRestoreView || 'main';
+
+        this.modalRestoreVillagerId = null;
+        this.modalRestoreAnchor = null;
+        this.modalRestoreView = null;
+
+        if (!reopenModal || !villagerId) {
+            return;
+        }
+
+        const villager = this.getVillagerById(villagerId);
+        if (!villager) {
+            return;
+        }
+
+        const pointer = anchor ? { clientX: anchor.x, clientY: anchor.y } : null;
+        this.openVillagerModal(villager, pointer);
+
+        if (restoreView && restoreView !== 'main') {
+            this.showVillagerModalView(restoreView);
+            if (restoreView === 'action-menu') {
+                const config = this.getProfessionActionConfig(villager.profession);
+                if (config) {
+                    this.activeProfessionActionMode = config.mode;
+                    this.populateActionMenu(villager, config.mode);
+                }
+            }
+        }
+    }
+
+    startTreePlantingTask(villager, plantable, location) {
+        villager.assignTreePlanting(location, plantable);
+        this.disposePlantingPreview();
+        this.pendingPlanting = null;
+        this.activeProfessionActionMode = null;
+        this.activePlantingHint = null;
+        this.professionInstructionOverride = {
+            villagerId: villager.id,
+            message: `${villager.name} is heading out to plant the ${plantable.name}.`,
+        };
+        this.resumeSimulationFromPlacement();
+        if (this.professionIconButton) {
+            this.professionIconButton.classList.remove('active');
+        }
+        if (this.selectedVillager && this.selectedVillager.id === villager.id) {
+            this.updateVillagerModal(villager);
+        }
+        this.showActionHint(`${villager.name} is heading out to plant the ${plantable.name}.`);
+    }
+
+    cancelPendingPlanting({ silent = false, message = 'Planting task cancelled.', reopenModal = true } = {}) {
+        const hadPending = !!this.pendingPlanting || !!this.plantingPreview;
+        if (!hadPending) {
+            if (!silent) {
+                this.hideActionHint();
+            }
+            this.resumeSimulationFromPlacement({ reopenModal });
+            return;
+        }
+
+        this.pendingPlanting = null;
+        this.professionInstructionOverride = null;
+        this.disposePlantingPreview();
+        this.activePlantingHint = null;
+        if (this.professionIconButton) {
+            this.professionIconButton.classList.remove('active');
+        }
+        if (this.selectedVillager) {
+            this.updateVillagerModal(this.selectedVillager);
+        }
+
+        if (!silent && message) {
+            this.showActionHint(message);
+        } else {
+            this.hideActionHint();
+        }
+
+        this.resumeSimulationFromPlacement({ reopenModal });
+    }
+
+    completeTreePlanting(villager, task) {
+        if (!task || !task.location) {
+            return;
+        }
+
+        const plantable = task.plantableId ? this.getPlantableDefinition(task.plantableId) : null;
+        const isCrop = plantable?.id === 'wheat-crop';
+
+        // Consume seeds if required
+        if (plantable?.requiresSeeds && villager) {
+            const seedCost = plantable.seedCost || 1;
+            villager.inventory.wheatSeeds = Math.max(0, (villager.inventory.wheatSeeds || 0) - seedCost);
+        }
+
+        const options = {
+            plantedBy: villager?.id ?? null,
+        };
+        if (plantable?.capacity) {
+            options.capacity = plantable.capacity;
+        }
+        if (plantable?.scale) {
+            options.scale = plantable.scale;
+        }
+
+        const growthConfig = plantable?.growthDays || { min: 1, max: 3 };
+        const minDays = Math.max(0.25, growthConfig.min ?? 1);
+        const maxDays = Math.max(minDays, growthConfig.max ?? minDays);
+        const randomDays = minDays + Math.random() * (maxDays - minDays);
+        const growthMinutes = randomDays * this.dayLengthMinutes;
+
+        options.stage = 'sapling';
+        options.matureInMinutes = growthMinutes;
+        options.growDays = randomDays;
+
+        const node = isCrop
+            ? this.createCropResource(task.location, options)
+            : this.createTreeResource(task.location, options);
+
+        node.plantedOnDay = this.currentDay;
+        node.plantedAtMinute = this.totalElapsedMinutes;
+        if (node.object) {
+            node.object.userData = node.object.userData || {};
+            if (isCrop) {
+                node.object.userData.cropNodeId = node.id;
+            } else {
+                node.object.userData.treeNodeId = node.id;
+            }
+        }
+        if (node.growth) {
+            node.growth.growDays = randomDays;
+        }
+
+        if (villager) {
+            this.professionInstructionOverride = {
+                villagerId: villager.id,
+                message: `${villager.name} planted a new ${plantable?.name || 'sapling'} for the village.`,
+            };
+            if (this.selectedVillager && this.selectedVillager.id === villager.id) {
+                this.updateVillagerModal(villager);
+            }
+        }
+
+        const planterName = villager?.name || 'A forester';
+        const plantingName = plantable?.name || 'sapling';
+        this.showActionHint(`${planterName} planted a new ${plantingName}!`);
     }
 
     canAffordStorehouse() {
@@ -547,6 +1424,68 @@ class SceneManager {
 
     getProfessionDefinition(id) {
         return this.professionRegistry.find(entry => entry.id === id) || null;
+    }
+
+    getProfessionActionConfig(id) {
+        return this.professionActions[id] || null;
+    }
+
+    getPlantablesForProfession(professionId) {
+        if (professionId === 'forester') {
+            return this.foresterPlantables;
+        }
+        if (professionId === 'farmer') {
+            return this.farmerPlantables;
+        }
+        return [];
+    }
+
+    getPlantableDefinition(plantableId) {
+        let plantable = this.foresterPlantables.find(entry => entry.id === plantableId);
+        if (plantable) return plantable;
+        plantable = this.farmerPlantables.find(entry => entry.id === plantableId);
+        return plantable || null;
+    }
+
+    setMeterValue(element, value) {
+        if (!element) return;
+        const ratio = THREE.MathUtils.clamp((value ?? 0) / 100, 0, 1);
+        element.style.transform = `scaleX(${ratio})`;
+    }
+
+    updateMeterStat(fillElement, labelElement, value, options = {}) {
+        this.setMeterValue(fillElement, value);
+        if (!labelElement) return;
+
+        const { warnAbove, alertAbove, warnBelow, alertBelow, formatter } = options;
+        const displayText = typeof formatter === 'function'
+            ? formatter(value)
+            : `${Math.round(value ?? 0)}%`;
+        labelElement.textContent = displayText;
+        labelElement.classList.remove('warn', 'alert');
+
+        if (typeof alertAbove === 'number' && value >= alertAbove) {
+            labelElement.classList.add('alert');
+        } else if (typeof alertBelow === 'number' && value <= alertBelow) {
+            labelElement.classList.add('alert');
+        } else if (typeof warnAbove === 'number' && value >= warnAbove) {
+            labelElement.classList.add('warn');
+        } else if (typeof warnBelow === 'number' && value <= warnBelow) {
+            labelElement.classList.add('warn');
+        }
+    }
+
+    getHungerDescriptor(value) {
+        if (value <= 15) return 'Content';
+        if (value <= 35) return 'Peckish';
+        if (value <= 60) return 'Hungry';
+        if (value <= 80) return 'Very Hungry';
+        return 'Starving';
+    }
+
+    prepareVillagerForManualAction(villager) {
+        if (!villager) return;
+        villager.abortCurrentActivities();
     }
 
     advanceTime(deltaSeconds) {
@@ -982,6 +1921,10 @@ class SceneManager {
     }
 
     startStorehouseConstruction(builder) {
+        if (!builder) {
+            console.warn('Cannot assign storehouse construction without a villager.');
+            return;
+        }
         if (this.storehouse && (this.storehouse.built || this.storehouse.building)) {
             alert('Storehouse is already built or being built.');
             return;
@@ -999,6 +1942,10 @@ class SceneManager {
         if (!location) {
             alert('Could not find a suitable location for the storehouse.');
             return;
+        }
+
+        if (builder) {
+            this.prepareVillagerForManualAction(builder);
         }
 
         // Consume resources
@@ -1627,6 +2574,105 @@ class SceneManager {
         this.activeStructureContext = null;
     }
 
+    showCropInfo(crop) {
+        if (!this.cropTooltipElement) return;
+        this.selectedCrop = crop;
+        this.cropTooltipElement.classList.remove('hidden');
+        this.cropTooltipElement.classList.add('visible');
+        this.cropTooltipElement.setAttribute('aria-hidden', 'false');
+        this.cropTooltipVisible = true;
+        this.populateCropTooltip(crop);
+    }
+
+    hideCropTooltip() {
+        if (!this.cropTooltipElement) return;
+        this.cropTooltipElement.classList.remove('visible');
+        this.cropTooltipElement.classList.add('hidden');
+        this.cropTooltipElement.setAttribute('aria-hidden', 'true');
+        this.cropTooltipVisible = false;
+        this.selectedCrop = null;
+    }
+
+    populateCropTooltip(crop) {
+        if (!crop || !crop.growth) return;
+
+        const growth = crop.growth;
+        const isMature = growth.stage === 'mature';
+
+        // Calculate growth percentage
+        let growthPercent = 100;
+        if (!isMature && growth.durationMinutes && growth.durationMinutes > 0) {
+            const elapsed = this.totalElapsedMinutes - (growth.createdAtMinutes || 0);
+            growthPercent = Math.min(100, Math.round((elapsed / growth.durationMinutes) * 100));
+        }
+
+        // Update title
+        if (this.cropTooltipTitle) {
+            this.cropTooltipTitle.textContent = 'Wheat Plot';
+        }
+
+        // Update status
+        if (this.cropTooltipStatus) {
+            if (isMature) {
+                this.cropTooltipStatus.textContent = 'Ready to Harvest';
+                this.cropTooltipStatus.style.color = '#4ade80';
+            } else {
+                this.cropTooltipStatus.textContent = 'Growing';
+                this.cropTooltipStatus.style.color = '#fbbf24';
+            }
+        }
+
+        // Update growth percentage
+        if (this.cropTooltipGrowthPercent) {
+            this.cropTooltipGrowthPercent.textContent = `${growthPercent}%`;
+            if (isMature) {
+                this.cropTooltipGrowthPercent.style.color = '#4ade80';
+            } else if (growthPercent > 66) {
+                this.cropTooltipGrowthPercent.style.color = '#a3e635';
+            } else if (growthPercent > 33) {
+                this.cropTooltipGrowthPercent.style.color = '#fbbf24';
+            } else {
+                this.cropTooltipGrowthPercent.style.color = '#fb923c';
+            }
+        }
+
+        // Update growth bar
+        if (this.cropTooltipGrowthBar) {
+            this.cropTooltipGrowthBar.style.width = `${growthPercent}%`;
+        }
+
+        // Update planter
+        if (this.cropTooltipPlanter) {
+            if (crop.plantedBy) {
+                const villager = this.getVillagerById(crop.plantedBy);
+                this.cropTooltipPlanter.textContent = villager?.name || 'Unknown';
+            } else {
+                this.cropTooltipPlanter.textContent = 'Unknown';
+            }
+        }
+
+        // Update time remaining
+        if (this.cropTooltipTimeRemaining) {
+            if (isMature) {
+                this.cropTooltipTimeRemaining.textContent = 'Complete';
+                this.cropTooltipTimeRemaining.style.color = '#4ade80';
+            } else if (growth.matureAtMinutes) {
+                const remaining = growth.matureAtMinutes - this.totalElapsedMinutes;
+                const remainingDays = (remaining / this.dayLengthMinutes).toFixed(1);
+                this.cropTooltipTimeRemaining.textContent = `${remainingDays} days`;
+                this.cropTooltipTimeRemaining.style.color = '#f0f7ff';
+            } else {
+                this.cropTooltipTimeRemaining.textContent = 'Unknown';
+            }
+        }
+
+        // Update yield
+        if (this.cropTooltipYield) {
+            const yieldAmount = crop.capacity || 16;
+            this.cropTooltipYield.textContent = `${yieldAmount} grain`;
+        }
+    }
+
     populateStructureModal(home) {
         if (!this.structureModalElement) return;
         const title = this.structureModalElement.querySelector('[data-field="structure-title"]');
@@ -1878,6 +2924,10 @@ class SceneManager {
             priorities.push('wood');
         }
 
+        if (this.inventory.grain < 100) {
+            priorities.push('grain');
+        }
+
         if (this.inventory.leaves < 80) {
             priorities.push('leaves');
         }
@@ -1886,7 +2936,7 @@ class SceneManager {
             priorities.push('stone');
         }
 
-        ['wood', 'leaves', 'stone'].forEach(type => {
+        ['wood', 'grain', 'leaves', 'stone'].forEach(type => {
             if (!priorities.includes(type)) {
                 priorities.push(type);
             }
@@ -1914,6 +2964,8 @@ class SceneManager {
             wood: this.resourceNodes.trees,
             stone: this.resourceNodes.stones,
             leaves: this.resourceNodes.bushes,
+            grain: this.resourceNodes.crops,
+            wheatSeeds: this.resourceNodes.seedPatches,
         };
 
         // If a specific type is requested, only search for that type
@@ -2389,35 +3441,608 @@ class SceneManager {
         return candidate.clone();
     }
 
+    createTreeResource(position, options = {}) {
+        const scale = options.scale ?? 1;
+        const stage = options.stage ?? 'mature';
+        const group = new THREE.Group();
+        group.position.set(position.x, position.y ?? 0, position.z);
+
+        const isSapling = stage === 'sapling';
+        const visual = isSapling
+            ? this.buildSaplingVisual(scale, { preview: false })
+            : this.buildMatureTreeVisual(scale);
+        group.add(visual);
+        group.rotation.y = Math.random() * Math.PI * 2;
+
+        this.scene.add(group);
+        this.obstacles.push(group);
+
+        const capacityBase = options.capacity ?? (60 + Math.floor(Math.random() * 40));
+        const capacity = Math.max(20, Math.round(capacityBase));
+        const remaining = isSapling ? 0 : capacity;
+
+        const id = `tree-${this.resourceNodes.trees.length + 1}`;
+        group.userData = group.userData || {};
+        group.userData.treeNodeId = id;
+        group.userData.growthStage = stage;
+
+        const durationMinutes = isSapling ? Math.max(0, options.matureInMinutes ?? this.dayLengthMinutes * 2) : null;
+
+        const node = {
+            id,
+            type: 'wood',
+            object: group,
+            position: group.position.clone(),
+            remaining,
+            capacity,
+            claimedBy: null,
+            depleted: false,
+            plantedBy: options.plantedBy ?? null,
+            visual,
+            growth: {
+                stage,
+                baseScale: scale,
+                createdAtMinutes: this.totalElapsedMinutes,
+                matureAtMinutes: isSapling && durationMinutes ? this.totalElapsedMinutes + durationMinutes : null,
+                durationMinutes,
+                growDays: options.growDays ?? null,
+            },
+        };
+
+        this.resourceNodes.trees.push(node);
+        if (isSapling) {
+            this.updateSaplingVisual(node, 0);
+        }
+        return node;
+    }
+
+    createCropResource(position, options = {}) {
+        const scale = options.scale ?? 1;
+        const stage = options.stage ?? 'mature';
+        const group = new THREE.Group();
+        group.position.set(position.x, position.y ?? 0, position.z);
+
+        const isSeedling = stage === 'sapling';
+        const visual = isSeedling
+            ? this.buildWheatSeedlingVisual(scale, { preview: false })
+            : this.buildMatureWheatVisual(scale);
+        group.add(visual);
+        group.rotation.y = Math.random() * Math.PI * 2;
+
+        this.scene.add(group);
+        this.obstacles.push(group);
+
+        const capacityBase = options.capacity ?? 16;
+        const capacity = Math.max(8, Math.round(capacityBase));
+        const remaining = isSeedling ? 0 : capacity;
+
+        const id = `crop-${this.resourceNodes.crops.length + 1}`;
+        group.userData = group.userData || {};
+        group.userData.cropNodeId = id;
+        group.userData.growthStage = stage;
+
+        // Set userData on ALL descendants for reliable click detection
+        group.traverse((child) => {
+            child.userData = child.userData || {};
+            child.userData.cropNodeId = id;
+        });
+
+        const durationMinutes = isSeedling ? Math.max(0, options.matureInMinutes ?? this.dayLengthMinutes * 1) : null;
+
+        const node = {
+            id,
+            type: 'grain',
+            object: group,
+            position: group.position.clone(),
+            remaining,
+            capacity,
+            claimedBy: null,
+            depleted: false,
+            plantedBy: options.plantedBy ?? null,
+            visual,
+            growth: {
+                stage,
+                baseScale: scale,
+                createdAtMinutes: this.totalElapsedMinutes,
+                matureAtMinutes: isSeedling && durationMinutes ? this.totalElapsedMinutes + durationMinutes : null,
+                durationMinutes,
+                growDays: options.growDays ?? null,
+            },
+        };
+
+        this.resourceNodes.crops.push(node);
+        if (isSeedling) {
+            this.updateCropSeedlingVisual(node, 0);
+        }
+        return node;
+    }
+
+    buildMatureTreeVisual(scale = 1, options = {}) {
+        const group = new THREE.Group();
+
+        const trunkHeight = 3.5 * scale;
+        const trunkRadiusTop = 0.45 * scale;
+        const trunkRadiusBottom = 0.55 * scale;
+        const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8b5a2b });
+        const trunkGeometry = new THREE.CylinderGeometry(trunkRadiusTop, trunkRadiusBottom, trunkHeight, 10);
+        const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+        trunk.position.y = trunkHeight / 2;
+        trunk.castShadow = false;
+        trunk.receiveShadow = false;
+        group.add(trunk);
+
+        const lowerFoliageGeometry = new THREE.ConeGeometry(2.8 * scale, 4.4 * scale, 12);
+        const lowerFoliageMaterial = new THREE.MeshStandardMaterial({ color: 0x1f5f1a });
+        const lowerFoliage = new THREE.Mesh(lowerFoliageGeometry, lowerFoliageMaterial);
+        lowerFoliage.position.y = trunkHeight * 0.92;
+        lowerFoliage.castShadow = false;
+        lowerFoliage.receiveShadow = false;
+        group.add(lowerFoliage);
+
+        const upperFoliageGeometry = new THREE.ConeGeometry(2.0 * scale, 3.0 * scale, 10);
+        const upperFoliageMaterial = new THREE.MeshStandardMaterial({ color: 0x256a1d });
+        const upperFoliage = new THREE.Mesh(upperFoliageGeometry, upperFoliageMaterial);
+        upperFoliage.position.y = lowerFoliage.position.y + 1.4 * scale;
+        group.add(upperFoliage);
+
+        if (options.preview) {
+            group.traverse(child => {
+                if (child.isMesh) {
+                    child.material = child.material.clone();
+                    child.material.transparent = true;
+                    child.material.opacity = 0.6;
+                    child.material.depthWrite = false;
+                }
+            });
+        }
+
+        return group;
+    }
+
+    buildSaplingVisual(scale = 1, { preview = false } = {}) {
+        const group = new THREE.Group();
+
+        const trunkHeight = 1.8 * scale;
+        const trunkGeometry = new THREE.CylinderGeometry(0.12 * scale, 0.2 * scale, trunkHeight, 8);
+        const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8a6138 });
+        const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+        trunk.position.y = trunkHeight / 2;
+        group.add(trunk);
+
+        const midFoliageGeometry = new THREE.SphereGeometry(0.62 * scale, 10, 10);
+        const midFoliageMaterial = new THREE.MeshStandardMaterial({ color: 0x2e7a36 });
+        const midFoliage = new THREE.Mesh(midFoliageGeometry, midFoliageMaterial);
+        midFoliage.position.y = trunkHeight * 0.78;
+        group.add(midFoliage);
+
+        const tipGeometry = new THREE.ConeGeometry(0.45 * scale, 0.95 * scale, 10);
+        const tipMaterial = new THREE.MeshStandardMaterial({ color: 0x32903b });
+        const tip = new THREE.Mesh(tipGeometry, tipMaterial);
+        tip.position.y = midFoliage.position.y + 0.6 * scale;
+        group.add(tip);
+
+        if (preview) {
+            group.traverse(child => {
+                if (child.isMesh) {
+                    child.material = child.material.clone();
+                    child.material.transparent = true;
+                    child.material.opacity = 0.65;
+                    child.material.depthWrite = false;
+                }
+            });
+        }
+
+        return group;
+    }
+
+    buildWheatPlotPreview(scale = 1, { preview = false } = {}) {
+        const group = new THREE.Group();
+
+        // Square tilled dirt patch base - MUCH BIGGER
+        const patchSize = 3.0 * scale;
+        const dirtGeometry = new THREE.PlaneGeometry(patchSize, patchSize);
+        const dirtMaterial = new THREE.MeshStandardMaterial({
+            color: 0x6b5344,
+            roughness: 0.95,
+            side: THREE.DoubleSide
+        });
+        const dirtPatch = new THREE.Mesh(dirtGeometry, dirtMaterial);
+        dirtPatch.rotation.x = -Math.PI / 2;
+        dirtPatch.position.y = 0.01;
+        group.add(dirtPatch);
+
+        // Add border/rim around the square plot
+        const borderWidth = 0.08 * scale;
+        const borderMaterial = new THREE.MeshStandardMaterial({
+            color: 0x5a4535,
+            roughness: 0.9
+        });
+
+        // Create 4 border pieces
+        const borders = [
+            { width: patchSize, height: borderWidth, x: 0, z: patchSize / 2 + borderWidth / 2 }, // top
+            { width: patchSize, height: borderWidth, x: 0, z: -patchSize / 2 - borderWidth / 2 }, // bottom
+            { width: borderWidth, height: patchSize + borderWidth * 2, x: patchSize / 2 + borderWidth / 2, z: 0 }, // right
+            { width: borderWidth, height: patchSize + borderWidth * 2, x: -patchSize / 2 - borderWidth / 2, z: 0 }, // left
+        ];
+
+        borders.forEach(b => {
+            const borderGeom = new THREE.PlaneGeometry(b.width, b.height);
+            const border = new THREE.Mesh(borderGeom, borderMaterial);
+            border.rotation.x = -Math.PI / 2;
+            border.position.set(b.x, 0.015, b.z);
+            group.add(border);
+        });
+
+        if (preview) {
+            group.traverse(child => {
+                if (child.isMesh) {
+                    child.material = child.material.clone();
+                    child.material.transparent = true;
+                    child.material.opacity = 0.7;
+                    child.material.depthWrite = false;
+                }
+            });
+        }
+
+        return group;
+    }
+
+    buildWheatSeedlingVisual(scale = 1, { preview = false } = {}) {
+        const group = new THREE.Group();
+
+        // Square tilled dirt patch base - MUCH BIGGER
+        const patchSize = 3.0 * scale;
+        const dirtGeometry = new THREE.PlaneGeometry(patchSize, patchSize);
+        const dirtMaterial = new THREE.MeshStandardMaterial({
+            color: 0x6b5344,
+            roughness: 0.95,
+            side: THREE.DoubleSide
+        });
+        const dirtPatch = new THREE.Mesh(dirtGeometry, dirtMaterial);
+        dirtPatch.rotation.x = -Math.PI / 2;
+        dirtPatch.position.y = 0.01;
+        group.add(dirtPatch);
+
+        // Tiny green sprouts emerging from dirt (will grow over time)
+        // Distributed in a grid pattern across the square plot
+        const sproutPositions = [
+            { x: 0, z: 0 },
+            { x: 0.6, z: 0.6 },
+            { x: -0.6, z: 0.6 },
+            { x: 0.6, z: -0.6 },
+            { x: -0.6, z: -0.6 },
+            { x: 0.9, z: 0 },
+            { x: -0.9, z: 0 },
+            { x: 0, z: 0.9 },
+            { x: 0, z: -0.9 },
+            { x: 0.6, z: 0 },
+            { x: -0.6, z: 0 },
+            { x: 0, z: 0.6 },
+            { x: 0, z: -0.6 },
+        ];
+
+        sproutPositions.forEach(pos => {
+            const sproutHeight = (0.08 + Math.random() * 0.04) * scale;
+            const sproutGeom = new THREE.CylinderGeometry(0.008 * scale, 0.012 * scale, sproutHeight, 4);
+            const sproutMat = new THREE.MeshStandardMaterial({ color: 0x7cad2e });
+            const sprout = new THREE.Mesh(sproutGeom, sproutMat);
+            sprout.position.set(pos.x * scale, sproutHeight / 2, pos.z * scale);
+            group.add(sprout);
+
+            // Tiny leaf on sprout
+            const leafGeom = new THREE.SphereGeometry(0.025 * scale, 4, 4);
+            const leafMat = new THREE.MeshStandardMaterial({ color: 0x8bc34a });
+            const leaf = new THREE.Mesh(leafGeom, leafMat);
+            leaf.position.set(pos.x * scale, sproutHeight, pos.z * scale);
+            leaf.scale.set(1, 0.5, 0.8);
+            group.add(leaf);
+        });
+
+        if (preview) {
+            group.traverse(child => {
+                if (child.isMesh) {
+                    child.material = child.material.clone();
+                    child.material.transparent = true;
+                    child.material.opacity = 0.65;
+                    child.material.depthWrite = false;
+                }
+            });
+        }
+
+        return group;
+    }
+
+    buildMatureWheatVisual(scale = 1, { preview = false } = {}) {
+        const group = new THREE.Group();
+
+        // Square dirt patch base (still visible at edges) - MUCH BIGGER
+        const patchSize = 3.0 * scale;
+        const dirtGeometry = new THREE.PlaneGeometry(patchSize, patchSize);
+        const dirtMaterial = new THREE.MeshStandardMaterial({
+            color: 0x7a6550,
+            roughness: 0.9,
+            side: THREE.DoubleSide
+        });
+        const dirtPatch = new THREE.Mesh(dirtGeometry, dirtMaterial);
+        dirtPatch.rotation.x = -Math.PI / 2;
+        dirtPatch.position.y = 0.01;
+        group.add(dirtPatch);
+
+        // Dense wheat field - multiple golden stalks in grid pattern filling the square
+        // Scaled up for bigger 3.0x3.0 plot
+        const wheatPositions = [
+            // 9x9 grid pattern for dense coverage across larger plot
+            { x: -1.0, z: -1.0 }, { x: -1.0, z: -0.75 }, { x: -1.0, z: -0.5 }, { x: -1.0, z: -0.25 }, { x: -1.0, z: 0 }, { x: -1.0, z: 0.25 }, { x: -1.0, z: 0.5 }, { x: -1.0, z: 0.75 }, { x: -1.0, z: 1.0 },
+            { x: -0.75, z: -1.0 }, { x: -0.75, z: -0.75 }, { x: -0.75, z: -0.5 }, { x: -0.75, z: -0.25 }, { x: -0.75, z: 0 }, { x: -0.75, z: 0.25 }, { x: -0.75, z: 0.5 }, { x: -0.75, z: 0.75 }, { x: -0.75, z: 1.0 },
+            { x: -0.5, z: -1.0 }, { x: -0.5, z: -0.75 }, { x: -0.5, z: -0.5 }, { x: -0.5, z: -0.25 }, { x: -0.5, z: 0 }, { x: -0.5, z: 0.25 }, { x: -0.5, z: 0.5 }, { x: -0.5, z: 0.75 }, { x: -0.5, z: 1.0 },
+            { x: -0.25, z: -1.0 }, { x: -0.25, z: -0.75 }, { x: -0.25, z: -0.5 }, { x: -0.25, z: -0.25 }, { x: -0.25, z: 0 }, { x: -0.25, z: 0.25 }, { x: -0.25, z: 0.5 }, { x: -0.25, z: 0.75 }, { x: -0.25, z: 1.0 },
+            { x: 0, z: -1.0 }, { x: 0, z: -0.75 }, { x: 0, z: -0.5 }, { x: 0, z: -0.25 }, { x: 0, z: 0 }, { x: 0, z: 0.25 }, { x: 0, z: 0.5 }, { x: 0, z: 0.75 }, { x: 0, z: 1.0 },
+            { x: 0.25, z: -1.0 }, { x: 0.25, z: -0.75 }, { x: 0.25, z: -0.5 }, { x: 0.25, z: -0.25 }, { x: 0.25, z: 0 }, { x: 0.25, z: 0.25 }, { x: 0.25, z: 0.5 }, { x: 0.25, z: 0.75 }, { x: 0.25, z: 1.0 },
+            { x: 0.5, z: -1.0 }, { x: 0.5, z: -0.75 }, { x: 0.5, z: -0.5 }, { x: 0.5, z: -0.25 }, { x: 0.5, z: 0 }, { x: 0.5, z: 0.25 }, { x: 0.5, z: 0.5 }, { x: 0.5, z: 0.75 }, { x: 0.5, z: 1.0 },
+            { x: 0.75, z: -1.0 }, { x: 0.75, z: -0.75 }, { x: 0.75, z: -0.5 }, { x: 0.75, z: -0.25 }, { x: 0.75, z: 0 }, { x: 0.75, z: 0.25 }, { x: 0.75, z: 0.5 }, { x: 0.75, z: 0.75 }, { x: 0.75, z: 1.0 },
+            { x: 1.0, z: -1.0 }, { x: 1.0, z: -0.75 }, { x: 1.0, z: -0.5 }, { x: 1.0, z: -0.25 }, { x: 1.0, z: 0 }, { x: 1.0, z: 0.25 }, { x: 1.0, z: 0.5 }, { x: 1.0, z: 0.75 }, { x: 1.0, z: 1.0 },
+        ];
+
+        wheatPositions.forEach(pos => {
+            const stalkHeight = (0.7 + Math.random() * 0.15) * scale;
+
+            // Golden stalk
+            const stalkGeom = new THREE.CylinderGeometry(0.015 * scale, 0.02 * scale, stalkHeight, 5);
+            const stalkMat = new THREE.MeshStandardMaterial({ color: 0xd4a017 });
+            const stalk = new THREE.Mesh(stalkGeom, stalkMat);
+            stalk.position.set(pos.x * scale, stalkHeight / 2, pos.z * scale);
+            stalk.rotation.z = (Math.random() - 0.5) * 0.1;
+            group.add(stalk);
+
+            // Wheat head (grain cluster)
+            const headGeom = new THREE.BoxGeometry(0.06 * scale, 0.12 * scale, 0.05 * scale);
+            const headMat = new THREE.MeshStandardMaterial({ color: 0xf4c430 });
+            const head = new THREE.Mesh(headGeom, headMat);
+            head.position.set(pos.x * scale, stalkHeight + 0.06 * scale, pos.z * scale);
+            head.rotation.y = Math.random() * Math.PI;
+            group.add(head);
+        });
+
+        // Add some taller wheat stalks for visual variety
+        const tallPositions = [
+            { x: 0.15, z: 0 },
+            { x: -0.15, z: 0.05 },
+            { x: 0, z: 0.18 },
+        ];
+
+        tallPositions.forEach(pos => {
+            const stalkHeight = (0.9 + Math.random() * 0.1) * scale;
+            const stalkGeom = new THREE.CylinderGeometry(0.018 * scale, 0.025 * scale, stalkHeight, 6);
+            const stalkMat = new THREE.MeshStandardMaterial({ color: 0xe3b525 });
+            const stalk = new THREE.Mesh(stalkGeom, stalkMat);
+            stalk.position.set(pos.x * scale, stalkHeight / 2, pos.z * scale);
+            group.add(stalk);
+
+            const headGeom = new THREE.SphereGeometry(0.045 * scale, 6, 6);
+            const headMat = new THREE.MeshStandardMaterial({ color: 0xffd700 });
+            const head = new THREE.Mesh(headGeom, headMat);
+            head.position.set(pos.x * scale, stalkHeight + 0.04 * scale, pos.z * scale);
+            head.scale.set(1, 1.4, 0.9);
+            group.add(head);
+        });
+
+        if (preview) {
+            group.traverse(child => {
+                if (child.isMesh) {
+                    child.material = child.material.clone();
+                    child.material.transparent = true;
+                    child.material.opacity = 0.65;
+                    child.material.depthWrite = false;
+                }
+            });
+        }
+
+        return group;
+    }
+
+    buildWheatSeedPatchVisual(scale = 1) {
+        const group = new THREE.Group();
+
+        // Create a cluster of wheat stalks with seed heads
+        const positions = [
+            { x: 0, z: 0 },
+            { x: 0.15, z: 0.1 },
+            { x: -0.12, z: 0.08 },
+            { x: 0.08, z: -0.15 },
+            { x: -0.1, z: -0.12 },
+        ];
+
+        positions.forEach((pos) => {
+            // Wild wheat stalk
+            const stalkHeight = (0.4 + Math.random() * 0.15) * scale;
+            const stalkGeom = new THREE.CylinderGeometry(0.015 * scale, 0.02 * scale, stalkHeight, 5);
+            const stalkMat = new THREE.MeshStandardMaterial({ color: 0xb8932b });
+            const stalk = new THREE.Mesh(stalkGeom, stalkMat);
+            stalk.position.set(pos.x * scale, stalkHeight / 2, pos.z * scale);
+            stalk.rotation.z = (Math.random() - 0.5) * 0.15;
+            group.add(stalk);
+
+            // Seed head
+            const headGeom = new THREE.SphereGeometry(0.06 * scale, 6, 6);
+            const headMat = new THREE.MeshStandardMaterial({ color: 0xe3c567 });
+            const head = new THREE.Mesh(headGeom, headMat);
+            head.position.set(pos.x * scale, stalkHeight + 0.05 * scale, pos.z * scale);
+            head.scale.set(1, 1.3, 0.8);
+            group.add(head);
+        });
+
+        // Add some ground vegetation
+        const baseGeom = new THREE.CircleGeometry(0.25 * scale, 8);
+        const baseMat = new THREE.MeshStandardMaterial({
+            color: 0x6b8e23,
+            side: THREE.DoubleSide
+        });
+        const base = new THREE.Mesh(baseGeom, baseMat);
+        base.rotation.x = -Math.PI / 2;
+        base.position.y = 0.01;
+        group.add(base);
+
+        return group;
+    }
+
+    updateTreeGrowth() {
+        if (!this.resourceNodes?.trees) return;
+        const nowMinutes = this.totalElapsedMinutes;
+
+        this.resourceNodes.trees.forEach(node => {
+            if (!node || node.depleted) return;
+            const growth = node.growth;
+            if (!growth) return;
+
+            if (growth.stage === 'sapling') {
+                if (growth.matureAtMinutes !== null && nowMinutes >= growth.matureAtMinutes) {
+                    this.matureTree(node);
+                    return;
+                }
+
+                if (growth.durationMinutes) {
+                    const elapsedMinutes = nowMinutes - (growth.createdAtMinutes ?? nowMinutes);
+                    const progress = THREE.MathUtils.clamp(elapsedMinutes / Math.max(growth.durationMinutes, 0.0001), 0, 0.999);
+                    this.updateSaplingVisual(node, progress);
+                }
+            }
+        });
+    }
+
+    updateSaplingVisual(node, progress) {
+        if (!node?.object) return;
+        const eased = THREE.MathUtils.smoothstep(progress, 0, 1);
+        const scale = THREE.MathUtils.lerp(0.7, 1.0, eased);
+        node.object.scale.setScalar(scale);
+    }
+
+    matureTree(node) {
+        if (!node || !node.object) return;
+        const growth = node.growth || (node.growth = {});
+
+        const oldChildren = [...node.object.children];
+        oldChildren.forEach(child => {
+            node.object.remove(child);
+            child.traverse(inner => {
+                if (inner.isMesh) {
+                    inner.geometry?.dispose?.();
+                    inner.material?.dispose?.();
+                }
+            });
+        });
+
+        const newVisual = this.buildMatureTreeVisual(growth.baseScale ?? 1);
+        node.object.add(newVisual);
+        node.object.scale.setScalar(1);
+        node.visual = newVisual;
+
+        node.remaining = node.capacity;
+        node.position = node.object.position.clone();
+        node.claimedBy = null;
+        node.depleted = false;
+
+        growth.stage = 'mature';
+        growth.matureAtMinutes = null;
+        growth.durationMinutes = null;
+
+        node.object.userData = node.object.userData || {};
+        node.object.userData.treeNodeId = node.id;
+        node.object.userData.growthStage = 'mature';
+
+        if (!growth.notifiedMature) {
+            const villager = node.plantedBy ? this.getVillagerById(node.plantedBy) : null;
+            const planterName = villager?.name || 'A forester';
+            this.showActionHint(`${planterName}'s sapling has grown into a sturdy tree!`);
+            growth.notifiedMature = true;
+        }
+    }
+
+    updateCropGrowth() {
+        if (!this.resourceNodes?.crops) return;
+        const nowMinutes = this.totalElapsedMinutes;
+
+        this.resourceNodes.crops.forEach(node => {
+            if (!node || node.depleted) return;
+            const growth = node.growth;
+            if (!growth) return;
+
+            if (growth.stage === 'sapling') {
+                if (growth.matureAtMinutes !== null && nowMinutes >= growth.matureAtMinutes) {
+                    this.matureCrop(node);
+                    return;
+                }
+
+                if (growth.durationMinutes) {
+                    const elapsedMinutes = nowMinutes - (growth.createdAtMinutes ?? nowMinutes);
+                    const progress = THREE.MathUtils.clamp(elapsedMinutes / Math.max(growth.durationMinutes, 0.0001), 0, 0.999);
+                    this.updateCropSeedlingVisual(node, progress);
+                }
+            }
+        });
+    }
+
+    updateCropSeedlingVisual(node, progress) {
+        if (!node?.object) return;
+        const eased = THREE.MathUtils.smoothstep(progress, 0, 1);
+        const scale = THREE.MathUtils.lerp(0.6, 1.0, eased);
+        node.object.scale.setScalar(scale);
+    }
+
+    matureCrop(node) {
+        if (!node || !node.object) return;
+        const growth = node.growth || (node.growth = {});
+
+        const oldChildren = [...node.object.children];
+        oldChildren.forEach(child => {
+            node.object.remove(child);
+            child.traverse(inner => {
+                if (inner.isMesh) {
+                    inner.geometry?.dispose?.();
+                    inner.material?.dispose?.();
+                }
+            });
+        });
+
+        const newVisual = this.buildMatureWheatVisual(growth.baseScale ?? 1);
+        node.object.add(newVisual);
+        node.object.scale.setScalar(1);
+        node.visual = newVisual;
+
+        node.remaining = node.capacity;
+        node.position = node.object.position.clone();
+        node.claimedBy = null;
+        node.depleted = false;
+
+        growth.stage = 'mature';
+        growth.matureAtMinutes = null;
+        growth.durationMinutes = null;
+
+        node.object.userData = node.object.userData || {};
+        node.object.userData.cropNodeId = node.id;
+        node.object.userData.growthStage = 'mature';
+
+        // Set userData on ALL descendants of the new visual for reliable click detection
+        node.object.traverse((child) => {
+            child.userData = child.userData || {};
+            child.userData.cropNodeId = node.id;
+        });
+
+        if (!growth.notifiedMature) {
+            const villager = node.plantedBy ? this.getVillagerById(node.plantedBy) : null;
+            const planterName = villager?.name || 'A farmer';
+            this.showActionHint(`${planterName}'s wheat has ripened and is ready for harvest!`);
+            growth.notifiedMature = true;
+        }
+    }
+
     // Procedural generation for trees (trunk + foliage)
     addTrees(count) {
         for (let i = 0; i < count; i++) {
             const position = this.getRandomPosition(40, 2);
-            const trunkGeometry = new THREE.CylinderGeometry(0.45, 0.55, 3.5, 8);
-            const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8b5a2b });
-            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
-            trunk.position.set(position.x, 1.75, position.z);
-
-            const foliageGeometry = new THREE.ConeGeometry(2.8, 4.5, 8);
-            const foliageMaterial = new THREE.MeshStandardMaterial({ color: 0x1f5f1a });
-            const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
-            foliage.position.y = 3;
-
-            trunk.add(foliage);
-            this.scene.add(trunk);
-            this.obstacles.push(trunk); // For collision later
-
             const capacity = 60 + Math.floor(Math.random() * 40);
-            this.resourceNodes.trees.push({
-                id: `tree-${this.resourceNodes.trees.length + 1}`,
-                type: 'wood',
-                object: trunk,
-                position: trunk.position.clone(),
-                remaining: capacity,
-                capacity,
-                claimedBy: null,
-                depleted: false,
-            });
+            const scale = 0.9 + Math.random() * 0.25;
+            this.createTreeResource(position, { capacity, scale, stage: 'mature' });
         }
     }
 
@@ -2443,6 +4068,33 @@ class SceneManager {
                 claimedBy: null,
                 depleted: false,
             });
+        }
+    }
+
+    // Wheat Seed Patches: Wild wheat with collectible seeds
+    addWheatSeedPatches(count) {
+        for (let i = 0; i < count; i++) {
+            const position = this.getRandomPosition(38, 2);
+            const scale = 0.8 + Math.random() * 0.4;
+            const visual = this.buildWheatSeedPatchVisual(scale);
+            visual.position.set(position.x, 0, position.z);
+            visual.rotation.y = Math.random() * Math.PI * 2;
+            this.scene.add(visual);
+
+            const capacity = 4 + Math.floor(Math.random() * 5); // 4-8 seeds per patch
+            const node = {
+                id: `seed-patch-${this.resourceNodes.seedPatches.length + 1}`,
+                type: 'wheatSeeds',
+                object: visual,
+                position: visual.position.clone(),
+                remaining: capacity,
+                capacity,
+                claimedBy: null,
+                depleted: false,
+            };
+
+            visual.userData.seedPatchNodeId = node.id;
+            this.resourceNodes.seedPatches.push(node);
         }
     }
 
@@ -2612,23 +4264,33 @@ class SceneManager {
     animate() {
         requestAnimationFrame(() => this.animate());
         const rawDelta = this.clock.getDelta();
-        const worldDelta = rawDelta * this.timeMultiplier;
+        const worldDelta = this.simulationPaused ? 0 : rawDelta * this.timeMultiplier;
 
-        this.advanceTime(worldDelta);
-        this.updateSocialSystems(worldDelta);
+        if (!this.simulationPaused) {
+            this.advanceTime(worldDelta);
+            this.updateSocialSystems(worldDelta);
 
-        // Update simulation: Move villagers
-        this.villagers.forEach(villager => villager.update(worldDelta, this.obstacles));
+            // Update simulation: Move villagers
+            this.villagers.forEach(villager => villager.update(worldDelta, this.obstacles));
 
-        this.updateBonfireFlicker(worldDelta);
+            this.updateBonfireFlicker(worldDelta);
 
-        // Update chimney smoke for all homes
-        this.homes.forEach(home => {
-            if (home.built && home.smokeData) {
-                this.updateHomeSmoke(home);
-                this.animateHomeSmoke(home, worldDelta);
+            // Update chimney smoke for all homes
+            this.homes.forEach(home => {
+                if (home.built && home.smokeData) {
+                    this.updateHomeSmoke(home);
+                    this.animateHomeSmoke(home, worldDelta);
+                }
+            });
+
+            this.treeGrowthAccumulator += worldDelta;
+            const growthTick = 0.6;
+            while (this.treeGrowthAccumulator >= growthTick) {
+                this.updateTreeGrowth();
+                this.updateCropGrowth();
+                this.treeGrowthAccumulator -= growthTick;
             }
-        });
+        }
 
         if (this.structureModalVisible) {
             this.updateStructureModalPosition();
@@ -2675,6 +4337,16 @@ class Villager {
         this.socialMeter = 60 + Math.random() * 25;
         this.socialCooldown = Math.random() * 5;
         this.energy = 100; // Energy system: 0-100, depletes during day, restores at night (faster with bed)
+        this.hunger = 20 + Math.random() * 25; // 0 = satisfied, 100 = starving
+        this.intelligence = 45 + Math.random() * 35;
+        this.strength = 45 + Math.random() * 35;
+        this.vitality = 3;
+        this.maxVitality = 3;
+
+        // Villager inventory system
+        this.inventory = {
+            wheatSeeds: 0,
+        };
     }
 
     setProfession(professionId) {
@@ -2719,7 +4391,7 @@ class Villager {
     }
 
     isGatheringProfession(prof = this.profession) {
-        return !prof || prof === 'gatherer';
+        return !prof || prof === 'gatherer' || prof === 'farmer';
     }
 
     getProfessionLabel() {
@@ -2736,6 +4408,12 @@ class Villager {
         // Gradual energy depletion during the day (not at night when resting)
         if (!this.manager.isNight() && this.energy > 0) {
             this.energy = Math.max(0, this.energy - 0.015); // Slow depletion
+        }
+
+        const hungerDelta = delta * (this.manager.isNight() ? -0.05 : 0.08);
+        this.hunger = THREE.MathUtils.clamp((this.hunger ?? 0) + hungerDelta, 0, 100);
+        if (this.hunger >= 85) {
+            this.energy = Math.max(0, this.energy - delta * 0.035);
         }
 
         if (this.specialTask) {
@@ -2787,7 +4465,13 @@ class Villager {
     updateGatherer(delta, obstacles) {
         switch (this.state) {
             case 'seekingResource': {
-                const node = this.manager.findResourceNodeForVillager(this);
+                // Farmers prioritize seeds when they have none
+                let preferredType = null;
+                if (this.profession === 'farmer' && (this.inventory.wheatSeeds || 0) === 0) {
+                    preferredType = 'wheatSeeds';
+                }
+
+                const node = this.manager.findResourceNodeForVillager(this, preferredType);
                 if (node) {
                     this.currentResource = node;
                     this.target = this.getResourceApproachPoint(node);
@@ -2848,8 +4532,14 @@ class Villager {
                 }
                 if (this.moveTowardsTarget(delta, 1.2)) {
                     if (this.carrying) {
-                        this.manager.depositResources(this.carrying);
-                        this.carrying = null;
+                        // Seeds go into villager inventory, other resources go to town storage
+                        if (this.carrying.type === 'wheatSeeds') {
+                            this.inventory.wheatSeeds = (this.inventory.wheatSeeds || 0) + this.carrying.amount;
+                            this.carrying = null;
+                        } else {
+                            this.manager.depositResources(this.carrying);
+                            this.carrying = null;
+                        }
                     }
                     this.state = 'seekingResource';
                     this.target = null;
@@ -2987,6 +4677,42 @@ class Villager {
                     this.finishSpecialTask();
                 } else {
                     this.faceTowards(home.location);
+                }
+            }
+            return true;
+        }
+
+        if (task.type === 'plantTree') {
+            if (!task.location) {
+                this.finishSpecialTask();
+                return false;
+            }
+
+            if (!task.target) {
+                task.target = task.location.clone().add(new THREE.Vector3(Math.random() * 0.6 - 0.3, 0, Math.random() * 0.6 - 0.3));
+                this.target = task.target.clone();
+            }
+
+            if (task.state === 'travel') {
+                const distanceToSpot = this.mesh.position.distanceTo(task.location);
+                const reachedTarget = this.moveTowardsTarget(delta, 0.8);
+
+                if (reachedTarget || distanceToSpot < 1.0) {
+                    task.state = 'planting';
+                    task.timer = 0;
+                    task.duration = task.duration ?? (2.6 + Math.random());
+                    this.target = null;
+                } else {
+                    this.avoidObstacles(obstacles, true);
+                }
+            } else if (task.state === 'planting') {
+                task.timer = (task.timer || 0) + delta;
+                const duration = task.duration ?? 2.8;
+                if (task.timer >= duration) {
+                    this.manager.completeTreePlanting(this, task);
+                    this.finishSpecialTask();
+                } else {
+                    this.faceTowards(task.location);
                 }
             }
             return true;
@@ -3309,6 +5035,8 @@ class Villager {
                 const hasBed = bedEntry && bedEntry.built;
                 const restoreRate = hasBed ? 0.5 : 0.2; // Faster restoration with bed
                 this.energy = Math.min(100, this.energy + restoreRate);
+                const appetiteRecovery = hasBed ? 0.55 : 0.32;
+                this.hunger = Math.max(0, this.hunger - appetiteRecovery * delta);
 
                 // Check if it's morning (time to leave)
                 if (!this.manager.isNight()) {
@@ -3416,6 +5144,49 @@ class Villager {
         this.state = 'special';
     }
 
+    assignTreePlanting(location, plantable) {
+        this.manager.releaseResourceClaim(this.currentResource, this);
+        this.currentResource = null;
+        this.carrying = null;
+        const approachOffset = new THREE.Vector3(Math.random() * 0.6 - 0.3, 0, Math.random() * 0.6 - 0.3);
+        const target = location.clone().add(approachOffset);
+        this.specialTask = {
+            type: 'plantTree',
+            location: location.clone(),
+            plantableId: plantable?.id ?? null,
+            plantableName: plantable?.name ?? 'sapling',
+            state: 'travel',
+            target,
+            duration: 2.6 + Math.random() * 1.2,
+        };
+        this.target = target.clone();
+        this.state = 'special';
+    }
+
+    abortCurrentActivities() {
+        if (this.specialTask) {
+            this.finishSpecialTask();
+        }
+
+        if (this.carrying) {
+            this.manager.depositResources(this.carrying);
+            this.carrying = null;
+        }
+
+        if (this.currentResource) {
+            this.manager.releaseResourceClaim(this.currentResource, this);
+            this.currentResource = null;
+        }
+
+        this.target = null;
+        this.timeToNextTarget = 0;
+        if (this.isGatheringProfession()) {
+            this.state = 'seekingResource';
+        } else {
+            this.state = 'wandering';
+        }
+    }
+
     isInsideHome() {
         const home = this.manager.getHomeForVillager(this);
         return home && home.occupantsInside && home.occupantsInside.has(this.id);
@@ -3503,6 +5274,11 @@ class Villager {
             const home = completedTask.homeId ? this.manager.getHomeById(completedTask.homeId) : null;
             if (home && home.builderId === this.id) {
                 home.builderId = null;
+            }
+        }
+        if (completedTask?.type === 'buildStorehouse') {
+            if (this.manager.storehouse && this.manager.storehouse.builderId === this.id) {
+                this.manager.storehouse.builderId = null;
             }
         }
         if (this.isGatheringProfession()) {
